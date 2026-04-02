@@ -13,6 +13,39 @@ def calculate_file_hash(file_path: str) -> str:
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
 
+import zipfile
+import shutil
+
+def extract_zip_files(zip_path: str, extract_to: str):
+    """ZIP 파일의 압축을 풀고 PDF 파일들을 지정된 폴더로 추출합니다."""
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # 압축 파일 내의 모든 파일 목록 확인
+            for file_info in zip_ref.infolist():
+                # 폴더 구조가 있어도 파일명만 추출하여 평면적으로 저장 (중복 방지 로직 포함 권장)
+                if not file_info.is_dir():
+                    filename = os.path.basename(file_info.filename)
+                    if not filename: continue # 디렉토리 엔트리 스킵
+                    
+                    target_path = os.path.join(extract_to, filename)
+                    
+                    # 파일명이 겹칠 경우 숫자 추가
+                    base, ext = os.path.splitext(filename)
+                    counter = 1
+                    while os.path.exists(target_path):
+                        target_path = os.path.join(extract_to, f"{base}_{counter}{ext}")
+                        counter += 1
+                    
+                    # 파일 추출
+                    with zip_ref.open(file_info) as source, open(target_path, "wb") as target:
+                        shutil.copyfileobj(source, target)
+            
+        log_message(f"압축 해제 완료: {zip_path}")
+        return True
+    except Exception as e:
+        log_message(f"압축 해제 실패 ({zip_path}): {str(e)}", "ERROR")
+        return False
+
 def log_message(message: str, level: str = "INFO"):
     """작업 수행 내역을 automation.log 파일에 기록합니다."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
