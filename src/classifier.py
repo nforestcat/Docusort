@@ -3,22 +3,23 @@ import shutil
 import time
 from google import genai
 from dotenv import load_dotenv
-from src.utils import log_message, extract_text_from_pdf, extract_zip_files
+from src.utils import log_message, extract_text_from_pdf, extract_zip_files, ensure_api_key
 
-# 환경 변수 로드
-load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-
-if not api_key:
-    log_message("GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.", "ERROR")
-    raise ValueError("GEMINI_API_KEY is missing.")
-
-# 최신 SDK 클라이언트 초기화
-client = genai.Client(api_key=api_key)
+# 전역 클라이언트 변수 (지연 초기화)
+client = None
 MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
+
+def get_client():
+    """API 키를 확인하고 클라이언트를 반환합니다."""
+    global client
+    if client is None:
+        api_key = ensure_api_key()
+        client = genai.Client(api_key=api_key)
+    return client
 
 def classify_document(text: str) -> str:
     """텍스트 내용을 분석하여 카테고리를 반환합니다."""
+    c = get_client()
     prompt = f"""
     당신은 전문 문서 분류 시스템입니다. 아래 문서의 내용을 분석하여 다음 중 가장 적절한 카테고리 하나만 단어로 답하세요:
     [기술, 금융, 일반, 논문]
@@ -30,7 +31,7 @@ def classify_document(text: str) -> str:
     """
     
     try:
-        response = client.models.generate_content(
+        response = c.models.generate_content(
             model=MODEL_NAME,
             contents=prompt
         )
@@ -68,9 +69,12 @@ def process_all_documents():
     input_dir = "input"
     output_base_dir = "output/classified"
     
+    # 여기서 클라이언트 초기화 유도 (키 체크 포함)
+    get_client()
+
     if not os.path.exists(input_dir):
-        log_message("input 폴더가 존재하지 않습니다.", "ERROR")
-        return
+        os.makedirs(input_dir, exist_ok=True)
+        log_message("input 폴더 생성됨.")
 
     # 1. 압축 파일 전처리
     handle_pre_processing(input_dir)
