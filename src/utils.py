@@ -46,6 +46,52 @@ def extract_zip_files(zip_path: str, extract_to: str):
         log_message(f"압축 해제 실패 ({zip_path}): {str(e)}", "ERROR")
         return False
 
+def ensure_api_key():
+    """API 키가 있는지 확인하고, 없으면 사용자에게 입력을 받아 .env를 생성합니다."""
+    from dotenv import load_dotenv, set_key
+    load_dotenv()
+    
+    api_key = os.getenv("GEMINI_API_KEY")
+    if api_key and api_key != "your_api_key_here":
+        return api_key
+
+    # 키가 없는 경우 입력 받기
+    print("\n" + "!"*50)
+    print("🔑 Gemini API 키가 설정되지 않았습니다.")
+    print("가이드: https://aistudio.google.com/app/apikey 에서 키를 발급받으세요.")
+    print("!"*50 + "\n")
+
+    # GUI 환경인지 확인 (간이 방법)
+    is_gui = False
+    try:
+        import __main__
+        if "gui" in os.path.basename(__main__.__file__):
+            is_gui = True
+    except: pass
+
+    new_key = ""
+    if is_gui:
+        import tkinter as tk
+        from tkinter import simpledialog
+        root = tk.Tk()
+        root.withdraw()
+        new_key = simpledialog.askstring("API 키 설정", 
+            "Google AI Studio에서 발급받은 API 키를 입력하세요:\n(https://aistudio.google.com/app/apikey)",
+            parent=root)
+        root.destroy()
+    else:
+        new_key = input("👉 API 키를 입력하고 Enter를 누르세요: ").strip()
+
+    if new_key:
+        with open(".env", "w", encoding="utf-8") as f:
+            f.write(f"GEMINI_API_KEY={new_key}\n")
+        print("✅ .env 파일이 성공적으로 생성되었습니다!")
+        os.environ["GEMINI_API_KEY"] = new_key
+        return new_key
+    else:
+        print("❌ API 키가 입력되지 않았습니다. 프로그램을 종료합니다.")
+        os._exit(1)
+
 def log_message(message: str, level: str = "INFO"):
     """작업 수행 내역을 automation.log 파일에 기록합니다."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
