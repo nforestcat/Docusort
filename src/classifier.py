@@ -3,7 +3,7 @@ import shutil
 import time
 from google import genai
 from dotenv import load_dotenv
-from src.utils import log_message, extract_text_from_pdf
+from src.utils import log_message, extract_text_from_pdf, extract_zip_files
 
 # 환경 변수 로드
 load_dotenv()
@@ -15,7 +15,7 @@ if not api_key:
 
 # 최신 SDK 클라이언트 초기화
 client = genai.Client(api_key=api_key)
-MODEL_NAME = 'gemini-3.1-flash-lite-preview'
+MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 
 def classify_document(text: str) -> str:
     """텍스트 내용을 분석하여 카테고리를 반환합니다."""
@@ -48,8 +48,23 @@ def classify_document(text: str) -> str:
         log_message(f"Gemini 분류 중 오류 발생: {str(e)}", "ERROR")
         return "일반"
 
+def handle_pre_processing(input_dir: str):
+    """압축 파일 등을 미리 처리합니다."""
+    processed_zips_dir = os.path.join(input_dir, "processed_zips")
+    
+    zip_files = [f for f in os.listdir(input_dir) if f.lower().endswith('.zip')]
+    if zip_files:
+        os.makedirs(processed_zips_dir, exist_ok=True)
+        print(f"📦 {len(zip_files)}개의 압축 파일 발견. 압축 해제 중...")
+        for zip_name in zip_files:
+            zip_path = os.path.join(input_dir, zip_name)
+            if extract_zip_files(zip_path, input_dir):
+                # 압축 해제 성공 시 processed_zips 폴더로 이동
+                shutil.move(zip_path, os.path.join(processed_zips_dir, zip_name))
+        print("✅ 압축 해제 완료.")
+
 def process_all_documents():
-    """input 폴더의 모든 PDF 파일을 분류합니다."""
+    """input 폴더의 모든 파일을 처리합니다."""
     input_dir = "input"
     output_base_dir = "output/classified"
     
@@ -57,6 +72,10 @@ def process_all_documents():
         log_message("input 폴더가 존재하지 않습니다.", "ERROR")
         return
 
+    # 1. 압축 파일 전처리
+    handle_pre_processing(input_dir)
+
+    # 2. PDF 파일 리스트 확보
     files = [f for f in os.listdir(input_dir) if f.lower().endswith('.pdf')]
     
     if not files:
