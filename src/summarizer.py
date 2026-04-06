@@ -4,34 +4,33 @@ import time
 import json
 import shutil
 import subprocess
-from src.utils import log_message, extract_text_from_pdf, calculate_file_hash
-import fitz
+import sys
+from src.utils import log_message, calculate_file_hash
+# import fitz  # PyMuPDF 사용 안함 (Gemini CLI 직접 처리)
 
-def call_gemini_cli(prompt: str) -> str:
-    """Gemini CLI를 직접 호출하여 결과를 반환합니다 (SSL 검증 무시 포함)."""
+def call_gemini_cli(prompt: str, file_path: str = None) -> str:
+    """Gemini CLI를 호출합니다. 파일 경로가 있으면 -f 옵션을 사용합니다."""
     custom_env = os.environ.copy()
     custom_env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
-    
+    custom_env["PYTHONIOENCODING"] = "utf-8"
     try:
+        if file_path:
+            # 파일을 직접 처리하는 경우
+            cmd = ["gemini.cmd", "-f", file_path, "-p", prompt]
+        else:
+            # 텍스트를 stdin으로 전달하는 경우 (현재는 사용 안 함)
+            cmd = ["gemini.cmd", "-p", prompt]
+
         result = subprocess.run(
-            ["gemini", prompt],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            env=custom_env
+            cmd, capture_output=True, text=True,
+            env=custom_env, shell=True, errors='replace', encoding='utf-8'
         )
-        
         if result.returncode == 0:
             return result.stdout.strip()
-        else:
-            log_message(f"CLI 에러: {result.stderr}", "ERROR")
-            return "ERROR: CLI_FAILED"
-    except Exception as e:
-        log_message(f"CLI 호출 중 예외 발생: {str(e)}", "ERROR")
-        return f"ERROR: {str(e)}"
+        return f"ERROR: {result.stderr}"
+    except Exception as e: return f"ERROR: {str(e)}"
 
 HISTORY_FILE = "output/processed_history.json"
-
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
@@ -44,57 +43,102 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
 
-def clean_paper_text(text: str) -> str:
-    ref_patterns = [r'\n\s*References\s*\n', r'\n\s*REFERENCES\s*\n', r'\n\s*참고문헌\s*\n']
-    for pattern in ref_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match: return text[:match.start()]
-    return text
+def summarize_and_rename_info(file_path: str):
+    instruction = """당신은 논문 분석가이자 서지 정보 추출 전문가입니다. 
+제시된 PDF 파일(논문)을 분석하여 서론이나 부연 설명 없이 즉시 아래 JSON 블록으로 시작하세요. 그 뒤에 요약본을 작성하세요.
 
-def summarize_and_rename_info(text: str):
-    """CLI를 사용하여 요약 및 메타데이터 추출을 수행합니다."""
-    prompt = f"""
-    당신은 전문적인 학술 논문 분석가이자 번역가입니다. 주어진 논문을 깊이 있게 읽고 아래 규칙에 따라 요약본과 파일 이름 정보를 제공하세요.
+**주의: 참고문헌(References) 섹션 이후의 내용은 분석 및 요약에서 완전히 제외하세요.**
 
-    [파일 이름 규칙]
-    응답 최상단에 반드시 아래 JSON 형식으로 포함하세요. 
-    **주의: JSON 내의 모든 값(year, author, keywords)은 반드시 영문(English)과 숫자만 사용하세요.**
-    ```json
-    {{
-      "year": "YYYY", 
-      "author": "Surname_in_English", 
-      "keywords": "English_Keywords_Separated_By_Underscore"
-    }}
-    ```
+[JSON 형식]
+{
+  "year": "출판 연도 (예: 2024)",
+  "author": "대표 저자의 성(Surname) (예: Smith)",
+  "keywords": "핵심 키워드 2-3개를 언더바(_)로 연결 (예: AI_Ethics_Policy)"
+}
 
-    [요약 및 번역 규칙]
-    1. **용어 병기:** 핵심 전문 용어는 `한국어 (English)` 형식으로 병기하세요.
-    2. **문장 스타일:** 학술적 톤을 유지하되, 한국어 문장 구조에 맞게 매끄럽게 의역하세요.
-    3. **자체 검수 단계:** 최종 출력 전 오역이나 어색한 표현을 스스로 수정하세요.
-
-    [출력 양식]
-    # 📄 [논문 제목]
-    ## 📚 1. 제목 및 서지 정보
-    ## 🎯 2. 연구 배경 및 목적
-    ## 💡 3. 핵심 가설 및 이론
-    ## 🛠️ 4. 연구 방법
-    ## 🏆 5. 핵심 결과
-    ## 🏁 6. 결론 및 의의
-
-    논문 텍스트:
-    {text[:15000]}
-    """
-    return call_gemini_cli(prompt)
+[요약 양식] 한국어(영어 병기) 마크다운. `# 요약`, `## 핵심 내용`, `## 결론` 형식을 반드시 지키세요.
+"""
+    return call_gemini_cli(instruction, file_path=file_path)
 
 def parse_response(text: str):
-    json_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
-    if json_match:
+    # 0. <thought> 블록 제거
+    text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # 1. JSON 블록 추출 시도
+    json_str = None
+    json_block_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if json_block_match:
+        json_str = json_block_match.group(1)
+    else:
+        json_match = re.search(r'(\{.*?\})', text, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+
+    refined_info = {"year": "0000", "author": "Unknown", "keywords": "Paper"}
+    summary = text
+
+    if json_str:
         try:
-            info = json.loads(json_match.group(1))
-            summary = text.replace(json_match.group(0), "").strip()
-            return info, summary
-        except: pass
-    return None, text
+            # 우선 json.loads로 시도
+            data = json.loads(json_str)
+            
+            # 연도 추출
+            year = data.get("year")
+            if not year and "publication_date" in data:
+                year_match = re.search(r'(\d{4})', str(data["publication_date"]))
+                if year_match: year = year_match.group(1)
+            refined_info["year"] = str(year) if year else "0000"
+            
+            # 저자 추출
+            author = data.get("author") or data.get("authors")
+            if isinstance(author, list) and author:
+                author = author[0]
+            # 저자 이름에서 성만 추출 시도 (공백 기준 마지막 단어)
+            if author and isinstance(author, str) and " " in author.strip():
+                author = author.strip().split(" ")[-1]
+            refined_info["author"] = str(author) if author else "Unknown"
+            
+            # 키워드 추출
+            keywords = data.get("keywords") or data.get("tags") or data.get("topic")
+            if isinstance(keywords, list):
+                keywords = "_".join(map(str, keywords[:3]))
+            refined_info["keywords"] = str(keywords) if keywords else "Paper"
+            
+            # 요약 본문은 JSON 이후 부분
+            summary = text.split(json_str)[-1].strip()
+            summary = re.sub(r'^```json|^```|^\s*\}', '', summary).strip()
+        except:
+            # JSON 파싱 실패 시 기존 regex 기반 추출 (최후의 수단)
+            year_match = re.search(r'"year":\s*"?(\d{4})"?', json_str)
+            if not year_match: year_match = re.search(r'"publication_date":\s*"?(\d{4})"?', json_str)
+            
+            author_match = re.search(r'"authors?":\s*(?:\[\s*"?(.*?)"?[,\]]|"?(.*?)"?[,}\n])', json_str)
+            
+            keywords_match = re.search(r'"(?:keywords|tags|topic)":\s*(?:\[\s*"?(.*?)"?[,\]]|"?(.*?)"?[,}\n])', json_str)
+
+            refined_info["year"] = year_match.group(1) if year_match else "0000"
+            
+            auth = (author_match.group(1) or author_match.group(2) or "Unknown") if author_match else "Unknown"
+            if " " in auth.strip(): auth = auth.strip().split(" ")[-1]
+            refined_info["author"] = auth
+            
+            refined_info["keywords"] = (keywords_match.group(1) or keywords_match.group(2) or "Paper") if keywords_match else "Paper"
+            
+            summary = text.split(json_str)[-1].strip()
+
+    # 요약 양식 강제 추출
+    summary_match = re.search(r'(#\s*요약.*)', summary, re.DOTALL | re.IGNORECASE)
+    if summary_match:
+        summary = summary_match.group(1)
+
+    return refined_info, summary
+
+def sanitize_filename(name: str) -> str:
+    name = str(name).replace("[", "").replace("]", "").replace("'", "").replace('"', "")
+    name = re.sub(r'[^a-zA-Z0-9_\-\[\]\s]', '', name)
+    name = name.strip().replace(" ", "_")
+    name = re.sub(r'_+', '_', name)
+    return name if name else "Unknown"
 
 def process_summaries():
     paper_dir = "output/classified/논문"
@@ -112,25 +156,21 @@ def process_summaries():
         file_hash = calculate_file_hash(file_path)
 
         if file_hash in history:
-            print(f"\n⚠️ 중복 감지: {filename}")
             shutil.move(file_path, os.path.join(processed_dir, history[file_hash]))
             continue
 
-        print(f"\n🚀 CLI 분석 시작: {filename}")
-        try:
-            doc = fitz.open(file_path); full_text = "".join([p.get_text() for p in doc]); doc.close()
-            cleaned_text = clean_paper_text(full_text)
-        except Exception as e: print(f"❌ 오류: {e}"); continue
-
-        raw = summarize_and_rename_info(cleaned_text)
-        if raw.startswith("ERROR"):
-            print(f"❌ {raw}"); continue
-            
+        print(f"\n🚀 분석 및 요약 중 (CLI 직접 파일 처리): {filename}...")
+        
+        raw = summarize_and_rename_info(file_path)
+        print(f"DEBUG: Raw response: {raw}")
         info, summary = parse_response(raw)
+        
         if info:
-            new_base = f"[{info.get('year', '0000')}]_[{info.get('author', 'Unknown')}]_[{info.get('keywords', 'Paper')}]"
-            new_base = re.sub(r'[\\/*?:"<>|]', "", new_base)
+            year = sanitize_filename(info.get('year', '0000'))
+            author = sanitize_filename(info.get('author', 'Unknown'))
+            keywords = sanitize_filename(info.get('keywords', 'Paper'))
             
+            new_base = f"[{year}]_[{author}]_[{keywords}]"
             new_pdf_name = f"{new_base}.pdf"
             new_summary_name = f"{new_base}_summary.md"
             
@@ -145,12 +185,13 @@ def process_summaries():
             
             shutil.move(file_path, target_path)
             final_name = os.path.basename(target_path)
-            print(f"✅ 완료: {final_name}")
+            print(f"  └ ✅ 요약 완료: {final_name}")
             history[file_hash] = final_name
             save_history(history)
-            time.sleep(5) # CLI 호출 간 간격
+            time.sleep(10) # 쿼터 방지
         else:
-            print(f"❌ 정보 추출 실패: {filename}")
+            print(f"  └ ❌ 추출 실패")
+            time.sleep(5)
 
 if __name__ == "__main__":
     process_summaries()
