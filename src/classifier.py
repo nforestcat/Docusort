@@ -1,9 +1,12 @@
 import os
 import shutil
 import time
+import re
+import sys
+import pymupdf4llm
 from google import genai
 from dotenv import load_dotenv
-from src.utils import log_message, extract_text_from_pdf, extract_zip_files, ensure_api_key
+from src.utils import log_message, extract_zip_files, ensure_api_key
 
 # 전역 클라이언트 변수 (지연 초기화)
 client = None
@@ -18,33 +21,51 @@ def get_client():
     return client
 
 def classify_document(text: str) -> str:
-    """텍스트 내용을 분석하여 카테고리를 반환합니다."""
+    """텍스트 내용을 분석하여 카테고리를 반환합니다.
+    문서의 앞부분(7000자)과 뒷부분(3000자)을 조합하여 분석의 정확도를 높입니다."""
     c = get_client()
-    prompt = f"""
-    당신은 전문 문서 분류 시스템입니다. 아래 문서의 내용을 분석하여 다음 중 가장 적절한 카테고리 하나만 단어로 답하세요:
+    
+    # 텍스트 샘플링 (앞부분 7000자 + 뒷부분 3000자)
+    sample_text = text[:7000] + "\n\n...[중략]...\n\n" + text[-3000:] if len(text) > 10000 else text
+
+    instruction = f"""당신은 고도로 정밀한 문서 분류기입니다. 제시된 텍스트(마크다운 형식)를 보고 다음 중 하나로 분류하세요:
     [기술, 금융, 일반, 논문]
+    
+    [분류 가이드라인]
+    1. 논문: 초록(Abstract), 서론(Introduction), 저자 소속(Affiliation), 참고문헌(References) 섹션 중 2개 이상의 특징이 명확한 경우. 
+       - 예: 학술지 게재용 포맷, DOI 포함, 학술적 연구 결과 보고 등.
+    2. 기술: 제품 매뉴얼, 사양서, 기술 백서(Whitepaper), API 가이드, 코드 설명서 등 구체적인 기술 정보 전달이 주된 목적인 경우.
+    3. 금융: 경제 리포트, 재무제표, 증권 분석, 은행/보험 안내서 등 금융 데이터나 경제 용어가 주된 경우.
+    4. 일반: 그 외의 서신, 뉴스 기사, 공지사항, 홍보물 등 일상적이거나 다른 범주에 속하지 않는 경우.
 
-    *주의: 제목에 'Abstract', 'References', 'Introduction' 등이 포함되거나 학술적인 형식의 문서는 반드시 '논문'으로 분류하세요.
+    *주의: 기술적 내용이 포함된 학술 논문은 반드시 '논문'으로 분류하세요.*
+    
+    결과는 반드시 다음 형식으로 답변하세요:
+    RESULT: [카테고리]
 
-    문서 내용 (일부):
-    {text[:2000]}
+    문서 내용:
+    {sample_text}
     """
     
     try:
         response = c.models.generate_content(
             model=MODEL_NAME,
-            contents=prompt
+            contents=instruction
         )
-        category = response.text.strip()
+        response_text = response.text.strip()
         
-        valid_categories = ["기술", "금융", "일반", "논문"]
-        if category not in valid_categories:
-            for valid in valid_categories:
-                if valid in category:
-                    return valid
-            return "일반"
+        # RESULT: [카테고리] 형식에서 추출 시도
+        match = re.search(r'RESULT:\s*\[?(논문|기술|금융|일반)\]?', response_text)
+        if match:
+            return match.group(1)
+        
+        # 형식이 틀린 경우 텍스트에서 카테고리 포함 여부 확인
+        valid_categories = ["논문", "기술", "금융", "일반"]
+        for valid in valid_categories:
+            if valid in response_text:
+                return valid
+        return "일반"
             
-        return category
     except Exception as e:
         log_message(f"Gemini 분류 중 오류 발생: {str(e)}", "ERROR")
         return "일반"
@@ -88,12 +109,13 @@ def process_all_documents():
 
     for filename in files:
         file_path = os.path.join(input_dir, filename)
-        print(f"처리 중: {filename}...")
+        print(f"\n🚀 문서 분석 중: {filename}...")
         
-        text = extract_text_from_pdf(file_path)
-        
-        if text.startswith("[ERROR]") or text.startswith("[WARNING]"):
-            log_message(f"파일 스킵: {filename} ({text})", "WARNING")
+        try:
+            # pymupdf4llm을 사용하여 마크다운 텍스트 추출
+            text = pymupdf4llm.to_markdown(file_path)
+        except Exception as e:
+            log_message(f"텍스트 추출 실패: {filename} ({str(e)})", "ERROR")
             continue
 
         category = classify_document(text)
@@ -103,10 +125,10 @@ def process_all_documents():
         os.makedirs(target_dir, exist_ok=True)
         
         shutil.move(file_path, os.path.join(target_dir, filename))
-        print(f"이동 완료: {category} 폴더로")
+        print(f"  └ ✅ {category} 폴더로 이동 완료.")
 
-        # RPM 제한 준수
-        time.sleep(15)
+        # RPM 15 제한 준수 (최소 4초 대기 필요, 안전하게 5초 설정)
+        time.sleep(5)
 
 if __name__ == "__main__":
     process_all_documents()

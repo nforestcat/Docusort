@@ -21,13 +21,19 @@ class NewFileHandler(FileSystemEventHandler):
 
     def run_process(self):
         self.processing = True
-        # 파일이 완전히 복사될 때까지 잠시 대기
-        time.sleep(2)
-        print("🚀 자동 프로세스를 시작합니다...")
+        # 파일이 완전히 복사/생성될 때까지 충분히 대기 (대용량 PDF 고려)
+        time.sleep(3)
+        print("\n🚀 자동 프로세스를 시작합니다 (분류 -> 요약)...")
         try:
+            # 1. 문서 분류 단계
+            print("[1단계: 문서 분류 및 전처리]")
             process_all_documents()
+            
+            # 2. 논문 요약 단계
+            print("\n[2단계: 논문 요약 및 이름 변경]")
             process_summaries()
-            print("✅ 자동 프로세스 완료. 감시를 계속합니다.")
+            
+            print("\n✅ 자동 프로세스 완료. 감시를 계속합니다.")
         except Exception as e:
             print(f"❌ 오류 발생: {e}")
         finally:
