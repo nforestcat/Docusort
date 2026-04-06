@@ -4,7 +4,8 @@ import time
 import subprocess
 import re
 import sys
-from src.utils import log_message, extract_text_from_pdf, extract_zip_files
+import pymupdf4llm
+from src.utils import log_message, extract_zip_files
 
 # 표준 출력 인코딩을 UTF-8로 강제 설정 (Windows 환경 대응)
 if sys.stdout.encoding != 'utf-8':
@@ -52,16 +53,29 @@ def call_gemini_cli(prompt: str, input_text: str = None) -> str:
         return "일반"
 
 def classify_document(text: str) -> str:
-    """CLI를 통해 카테고리를 판단합니다."""
-    instruction = """당신은 고도로 정밀한 문서 분류기입니다. 아래 문서의 텍스트를 보고 다음 중 하나로 분류하세요:
+    """CLI를 통해 카테고리를 판단합니다. 
+    정확도를 위해 문서의 앞부분(7000자)과 뒷부분(3000자)을 조합하여 분석합니다."""
+    
+    # 앞부분(초록/서론)과 뒷부분(결론/참고문헌)을 샘플링하여 전달
+    sample_text = text[:7000] + "\n\n...[중략]...\n\n" + text[-3000:] if len(text) > 10000 else text
+    
+    instruction = """당신은 고도로 정밀한 문서 분류기입니다. 제시된 텍스트(마크다운 형식)를 보고 다음 중 하나로 분류하세요:
     [기술, 금융, 일반, 논문]
+    
+    [분류 가이드라인]
+    1. 논문: 초록(Abstract), 서론(Introduction), 저자 소속(Affiliation), 참고문헌(References) 섹션 중 2개 이상의 특징이 명확한 경우. 
+       - 예: 학술지 게재용 포맷, DOI 포함, 학술적 연구 결과 보고 등.
+    2. 기술: 제품 매뉴얼, 사양서, 기술 백서(Whitepaper), API 가이드, 코드 설명서 등 구체적인 기술 정보 전달이 주된 목적인 경우.
+    3. 금융: 경제 리포트, 재무제표, 증권 분석, 은행/보험 안내서 등 금융 데이터나 경제 용어가 주된 경우.
+    4. 일반: 그 외의 서신, 뉴스 기사, 공지사항, 홍보물 등 일상적이거나 다른 범주에 속하지 않는 경우.
+
+    *주의: 기술적 내용이 포함된 학술 논문은 반드시 '논문'으로 분류하세요.*
     
     결과는 반드시 다음 형식을 따르세요:
     RESULT: [카테고리]
     """
     
-    # 텍스트가 너무 길면 잘라서 전달 (토큰 절약 및 속도 향상)
-    response_text = call_gemini_cli(instruction, input_text=text[:10000])
+    response_text = call_gemini_cli(instruction, input_text=sample_text)
     
     match = re.search(r'RESULT:\s*\[?(논문|기술|금융|일반)\]?', response_text)
     if match:
@@ -95,10 +109,13 @@ def process_all_documents():
     
     for filename in files:
         file_path = os.path.join(input_dir, filename)
-        print(f"CLI 분류 시작: {filename}...")
+        print(f"\n🚀 CLI 분류 시작 (PyMuPDF4LLM): {filename}...")
         
-        text = extract_text_from_pdf(file_path)
-        if text.startswith("[ERROR]"):
+        try:
+            # PyMuPDF4LLM을 사용하여 텍스트 추출
+            text = pymupdf4llm.to_markdown(file_path)
+        except Exception as e:
+            print(f"DEBUG: Extraction Error: {e}")
             continue
 
         category = classify_document(text)
