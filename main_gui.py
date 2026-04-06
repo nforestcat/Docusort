@@ -62,15 +62,21 @@ class DocuSortGUI:
         threading.Thread(target=self.run_process, daemon=True).start()
 
     def run_process(self):
-        self.log("🚀 프로세스를 시작합니다...")
+        self.log("🚀 전체 프로세스를 시작합니다 (분류 -> 요약)...")
         try:
+            # 분류 단계
+            self.log("[1단계: 문서 분류 및 전처리]")
             process_all_documents()
+            
+            # 요약 단계
+            self.log("\n[2단계: 논문 요약 및 이름 변경]")
             process_summaries()
-            self.log("✅ 모든 작업이 완료되었습니다!")
-            messagebox.showinfo("완료", "문서 분류 및 요약이 완료되었습니다.")
+            
+            self.log("\n✅ 모든 작업이 완료되었습니다!")
+            messagebox.showinfo("완료", "모든 문서의 분류 및 요약이 완료되었습니다.")
         except Exception as e:
-            self.log(f"❌ 오류: {str(e)}")
-            messagebox.showerror("오류", f"작업 중 오류 발생: {e}")
+            self.log(f"❌ 오류 발생: {str(e)}")
+            messagebox.showerror("오류", f"작업 중 치명적 오류가 발생했습니다:\n{e}")
         finally:
             self.start_btn.config(state=tk.NORMAL)
 
@@ -81,22 +87,30 @@ class DocuSortGUI:
             self.stop_monitoring()
 
     def start_monitor_thread(self):
-        from main_monitor import NewFileHandler
         from watchdog.observers import Observer
+        from main_monitor import NewFileHandler
 
         self.monitoring = True
         self.monitor_btn.config(text="🛑 감시 중지", bg="#f44336")
-        self.log("🔍 실시간 감시를 시작합니다 (input 폴더)...")
+        self.log("🔍 실시간 감시 모드 활성화 (input 폴더)...")
 
-        # 모니터링 로직 (GUI용 커스텀 핸들러)
+        # GUI용 커스텀 핸들러 (로그 연동)
         class GUIFileHandler(NewFileHandler):
             def __init__(self, gui):
                 super().__init__()
                 self.gui = gui
             def run_process(self):
-                self.gui.log(f"🔔 새 파일 감지! 프로세스 가동...")
-                super().run_process()
-                self.gui.log("✅ 대기 중...")
+                self.processing = True
+                self.gui.log(f"\n🔔 새 파일 감지! 자동 프로세스를 시작합니다...")
+                time.sleep(3) # 파일 쓰기 완료 대기
+                try:
+                    process_all_documents()
+                    process_summaries()
+                    self.gui.log("✅ 자동 프로세스 완료. 대기 중...")
+                except Exception as e:
+                    self.gui.log(f"❌ 자동 처리 중 오류: {e}")
+                finally:
+                    self.processing = False
 
         self.observer = Observer()
         handler = GUIFileHandler(self)

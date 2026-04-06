@@ -1,4 +1,5 @@
 pymupdf
+pymupdf4llm
 python-dotenv
 google-genai
 watchdog
