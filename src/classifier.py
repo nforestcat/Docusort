@@ -4,7 +4,7 @@ import time
 import subprocess
 import re
 import sys
-from src.utils import log_message, extract_zip_files
+from src.utils import log_message, extract_text_from_pdf, extract_zip_files
 
 # 표준 출력 인코딩을 UTF-8로 강제 설정 (Windows 환경 대응)
 if sys.stdout.encoding != 'utf-8':
@@ -14,20 +14,18 @@ if sys.stdout.encoding != 'utf-8':
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-def call_gemini_cli(prompt: str, file_path: str = None) -> str:
-    """Gemini CLI를 사용합니다. 파일 경로가 있으면 -f 옵션을 사용합니다."""
+def call_gemini_cli(prompt: str, input_text: str = None) -> str:
+    """Gemini CLI를 사용합니다."""
     custom_env = os.environ.copy()
     custom_env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     custom_env["PYTHONIOENCODING"] = "utf-8"
     
     try:
-        if file_path:
-            cmd = ["gemini.cmd", "-f", file_path, "-p", prompt]
-        else:
-            cmd = ["gemini.cmd", "-p", prompt]
+        cmd = ["gemini.cmd", "-p", prompt]
         
         result = subprocess.run(
             cmd,
+            input=input_text,
             capture_output=True,
             text=True,
             env=custom_env,
@@ -53,16 +51,17 @@ def call_gemini_cli(prompt: str, file_path: str = None) -> str:
         log_message(f"CLI 예외 발생: {str(e)}", "ERROR")
         return "일반"
 
-def classify_document(file_path: str) -> str:
+def classify_document(text: str) -> str:
     """CLI를 통해 카테고리를 판단합니다."""
-    instruction = """당신은 고도로 정밀한 문서 분류기입니다. 제시된 파일을 보고 다음 중 하나로 분류하세요:
+    instruction = """당신은 고도로 정밀한 문서 분류기입니다. 아래 문서의 텍스트를 보고 다음 중 하나로 분류하세요:
     [기술, 금융, 일반, 논문]
     
     결과는 반드시 다음 형식을 따르세요:
     RESULT: [카테고리]
     """
     
-    response_text = call_gemini_cli(instruction, file_path=file_path)
+    # 텍스트가 너무 길면 잘라서 전달 (토큰 절약 및 속도 향상)
+    response_text = call_gemini_cli(instruction, input_text=text[:10000])
     
     match = re.search(r'RESULT:\s*\[?(논문|기술|금융|일반)\]?', response_text)
     if match:
@@ -96,9 +95,13 @@ def process_all_documents():
     
     for filename in files:
         file_path = os.path.join(input_dir, filename)
-        print(f"CLI 분류 시작 (직접 파일 처리): {filename}...")
+        print(f"CLI 분류 시작: {filename}...")
         
-        category = classify_document(file_path)
+        text = extract_text_from_pdf(file_path)
+        if text.startswith("[ERROR]"):
+            continue
+
+        category = classify_document(text)
         log_message(f"분류 완료: {filename} -> {category}")
 
         target_dir = os.path.join(output_base_dir, category)

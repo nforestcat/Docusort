@@ -5,24 +5,18 @@ import json
 import shutil
 import subprocess
 import sys
-from src.utils import log_message, calculate_file_hash
-# import fitz  # PyMuPDF 사용 안함 (Gemini CLI 직접 처리)
+from src.utils import log_message, extract_text_from_pdf, calculate_file_hash
+import fitz
 
-def call_gemini_cli(prompt: str, file_path: str = None) -> str:
-    """Gemini CLI를 호출합니다. 파일 경로가 있으면 -f 옵션을 사용합니다."""
+def call_gemini_cli(prompt: str, input_text: str = None) -> str:
+    """Gemini CLI를 호출합니다."""
     custom_env = os.environ.copy()
     custom_env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     custom_env["PYTHONIOENCODING"] = "utf-8"
     try:
-        if file_path:
-            # 파일을 직접 처리하는 경우
-            cmd = ["gemini.cmd", "-f", file_path, "-p", prompt]
-        else:
-            # 텍스트를 stdin으로 전달하는 경우 (현재는 사용 안 함)
-            cmd = ["gemini.cmd", "-p", prompt]
-
+        cmd = ["gemini.cmd", "-p", prompt]
         result = subprocess.run(
-            cmd, capture_output=True, text=True,
+            cmd, input=input_text, capture_output=True, text=True,
             env=custom_env, shell=True, errors='replace', encoding='utf-8'
         )
         if result.returncode == 0:
@@ -43,11 +37,17 @@ def save_history(history):
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
 
-def summarize_and_rename_info(file_path: str):
-    instruction = """당신은 논문 분석가이자 서지 정보 추출 전문가입니다. 
-제시된 PDF 파일(논문)을 분석하여 서론이나 부연 설명 없이 즉시 아래 JSON 블록으로 시작하세요. 그 뒤에 요약본을 작성하세요.
+def clean_paper_text(text: str) -> str:
+    """참고문헌(References) 섹션 이후의 텍스트는 분석에서 제외합니다."""
+    ref_patterns = [r'\n\s*References\s*\n', r'\n\s*REFERENCES\s*\n', r'\n\s*참고문헌\s*\n']
+    for pattern in ref_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match: return text[:match.start()]
+    return text
 
-**주의: 참고문헌(References) 섹션 이후의 내용은 분석 및 요약에서 완전히 제외하세요.**
+def summarize_and_rename_info(text: str):
+    instruction = """당신은 논문 분석가이자 서지 정보 추출 전문가입니다. 
+서론이나 부연 설명 없이 즉시 아래 JSON 블록으로 시작하세요. 그 뒤에 요약본을 작성하세요.
 
 [JSON 형식]
 {
@@ -58,7 +58,7 @@ def summarize_and_rename_info(file_path: str):
 
 [요약 양식] 한국어(영어 병기) 마크다운. `# 요약`, `## 핵심 내용`, `## 결론` 형식을 반드시 지키세요.
 """
-    return call_gemini_cli(instruction, file_path=file_path)
+    return call_gemini_cli(instruction, input_text=text[:10000])
 
 def parse_response(text: str):
     # 0. <thought> 블록 제거
@@ -159,9 +159,13 @@ def process_summaries():
             shutil.move(file_path, os.path.join(processed_dir, history[file_hash]))
             continue
 
-        print(f"\n🚀 분석 및 요약 중 (CLI 직접 파일 처리): {filename}...")
-        
-        raw = summarize_and_rename_info(file_path)
+        print(f"\n🚀 분석 및 요약 중: {filename}...")
+        try:
+            doc = fitz.open(file_path); full_text = "".join([p.get_text() for p in doc]); doc.close()
+            cleaned_text = clean_paper_text(full_text)
+        except: continue
+
+        raw = summarize_and_rename_info(cleaned_text)
         print(f"DEBUG: Raw response: {raw}")
         info, summary = parse_response(raw)
         

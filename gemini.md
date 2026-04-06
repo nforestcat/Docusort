@@ -14,7 +14,7 @@
 
 ## 3. 기술 스택 (Tech Stack)
 - **Language:** Python 3.10+
-- **PDF 처리:** `PyMuPDF` 대신 Gemini CLI의 파일 직접 처리 기능을 우선적으로 사용합니다. (브랜치 전용 규칙)
+- **PDF 처리:** `PyMuPDF`를 사용하여 텍스트를 추출하되, 효율성을 위해 첫 10,000자 내외의 텍스트만 처리하고 참고문헌 섹션은 제외합니다.
 - **AI/LLM:** Gemini CLI 혹은 Gemini API (분류 및 요약 로직용)
 - **환경 관리:** `python-dotenv`를 사용하여 API 키 관리
 
