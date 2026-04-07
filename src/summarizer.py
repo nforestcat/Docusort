@@ -7,10 +7,10 @@ import sys
 import pymupdf4llm
 from google import genai
 from dotenv import load_dotenv
-from src.utils import log_message, calculate_file_hash, ensure_api_key
+from src.utils import log_message, calculate_file_hash, ensure_api_key, load_history, save_history
 
-# 사용할 모델 리스트
-MODELS = ['gemini-3.1-flash-lite-preview', 'gemini-1.5-flash']
+# 사용할 모델 리스트 (gemma_version 브랜치: Gemma 4 전담)
+MODELS = ['gemma-4-31b-it']
 current_model_idx = 0
 client = None
 
@@ -22,91 +22,116 @@ def get_client():
         client = genai.Client(api_key=api_key)
     return client
 
-HISTORY_FILE = "output/processed_history.json"
+def split_and_filter_sections(text: str):
+    """섹션을 분할하고 알짜배기 섹션만 골라내어 그룹화합니다."""
+    # ## 헤더 기준으로 분할
+    raw_sections = re.split(r'(\n##\s+)', text)
+    
+    # 헤더와 내용을 매핑
+    sections_dict = {"Intro_Abstract": []}
+    current_header = "Intro_Abstract"
+    
+    if len(raw_sections) > 1:
+        # 첫 부분 (보통 Abstract)
+        sections_dict["Intro_Abstract"].append(raw_sections[0].strip())
+        
+        for i in range(1, len(raw_sections), 2):
+            header = raw_sections[i].strip().lower()
+            content = raw_sections[i+1].strip() if i+1 < len(raw_sections) else ""
+            
+            # 버릴 섹션 필터링
+            skip_keywords = ['reference', 'related work', 'acknowledgement', 'appendix', 'conflict of interest', 'supporting information', 'author contribution']
+            if any(k in header for k in skip_keywords):
+                continue
+            
+            # 핵심 그룹화 (Map 1: 배경 및 결론)
+            core_keywords = ['abstract', 'introduction', 'conclusion', 'summary']
+            # 연구 그룹화 (Map 2: 본문 및 결과)
+            research_keywords = ['result', 'discussion', 'method', 'experiment', 'analysis', 'implementation']
+            
+            if any(k in header for k in core_keywords):
+                sections_dict["Intro_Abstract"].append(f"## {header}\n{content}")
+            elif any(k in header for k in research_keywords):
+                if "Research_Body" not in sections_dict: sections_dict["Research_Body"] = []
+                sections_dict["Research_Body"].append(f"## {header}\n{content}")
+            else:
+                # 기타 분류되지 않은 중요할 수 있는 본문
+                if "Research_Body" not in sections_dict: sections_dict["Research_Body"] = []
+                sections_dict["Research_Body"].append(f"## {header}\n{content}")
+    else:
+        sections_dict["Intro_Abstract"].append(text)
 
-def load_history():
-    """기존 처리 이력을 로드합니다."""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: return {}
-    return {}
+    return sections_dict
 
-def save_history(history):
-    """새로운 처리 이력을 저장합니다."""
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
-
-def switch_model():
-    global current_model_idx, client
-    if current_model_idx < len(MODELS) - 1:
-        current_model_idx += 1
-        client = None # 클라이언트 재설정 유도
-        return True
-    return False
-
-def clean_paper_text(text: str) -> str:
-    """참고문헌(References) 섹션 이후의 텍스트는 분석에서 제외합니다."""
-    # 특수 기호와 헤더를 포함하는 더 유연한 패턴
-    ref_patterns = [
-        r'\n\s*#*\s*.*References.*',
-        r'\n\s*#*\s*.*REFERENCES.*',
-        r'\n\s*#*\s*.*참고문헌.*'
-    ]
-    for pattern in ref_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match: return text[:match.start()]
-    return text
-
-def summarize_and_rename_info(text: str):
-    """Gemini SDK를 사용하여 요약 및 서지 정보를 추출합니다."""
+def summarize_group(group_name: str, content_list: list):
+    """그룹화된 텍스트를 한 번의 API 호출로 요약합니다."""
     c = get_client()
-    instruction = """당신은 전문적인 학술 논문 분석가이자 서지 정보 추출 전문가입니다. 
-제시된 텍스트 전체를 분석하여 서론이나 부연 설명 없이 즉시 아래 JSON 블록으로 시작하세요. 그 뒤에 요약본을 작성하세요.
+    combined_content = "\n\n".join(content_list)
+    
+    if group_name == "Intro_Abstract":
+        role = "논문의 연구 배경, 목적, 그리고 최종 결론을 분석하는 전략 분석가"
+        focus = "이 연구가 왜 시작되었으며, 어떤 문제를 해결했고, 최종적으로 어떤 성과를 거두었는지에 집중하세요."
+    else:
+        role = "논문의 실험 방법론과 결과 데이터를 정밀 분석하는 기술 심사역"
+        focus = "구체적인 연구 방법, 실험 결과, 데이터의 의미 및 논의 사항에 집중하여 상세히 요약하세요."
+
+    instruction = f"""당신은 {role}입니다.
+제시된 텍스트는 논문의 핵심 섹션들입니다. 내용을 상세하고 전문적으로 요약하세요.
 
 [중요 지침]
-- 반드시 표준 한국어(UTF-8)를 사용하여 한글이 깨지지 않도록 작성하세요.
-- JSON 블록 이후에는 마크다운 형식의 한국어 요약을 작성하세요.
+- 반드시 한국어(UTF-8)를 사용하세요.
+- 마크다운 헤더(##)를 기준으로 내용을 파악하되, 원본에 있는 주요 섹션의 정보가 누락되지 않도록 하세요.
+- {focus}
+"""
+    try:
+        response = c.models.generate_content(
+            model=MODELS[current_model_idx],
+            contents=[instruction, combined_content]
+        )
+        return response.text if response.text else f"{group_name} 요약 실패"
+    except Exception as e:
+        return f"Error in Map phase ({group_name}): {str(e)}"
+
+def reduce_final_review(mapped_summaries: list):
+    """(Reduce Phase) 개별 그룹 요약본을 합쳐 최종 리뷰와 서지 정보를 생성합니다."""
+    c = get_client()
+    combined_text = "\n\n---\n\n".join(mapped_summaries)
+    
+    instruction = """당신은 논문의 전체 구조와 세부 연구 결과를 통합하여 고품질 학술 리뷰를 작성하는 수석 편집자입니다.
+제시된 요약본들을 하나로 합쳐 깊이 있는 최종 리뷰 문서를 작성하고 서지 정보를 추출하세요.
+
+[중요 지침]
+- 반드시 한국어(UTF-8)를 사용하세요.
+- 전체적인 연구의 흐름(배경 -> 방법 -> 결과 -> 결론)이 매끄럽게 연결되도록 하세요.
+- 결과물은 반드시 아래의 JSON 블록으로 시작하고, 그 뒤에 마크다운 리뷰를 작성하세요.
 
 [JSON 형식]
 ```json
 {
   "year": "출판 연도 (예: 2024)",
   "author": "대표 저자의 성(Surname) (예: Smith)",
-  "keywords": "핵심 키워드 2-3개를 언더바(_)로 연결 (예: AI_Ethics_Policy)"
+  "keywords": "핵심 키워드 2-3개를 언더바(_)로 연결"
 }
 ```
 
-[요약 양식] 한국어(영어 병기) 마크다운. `# 요약`, `## 핵심 내용`, `## 결론` 형식을 반드시 지키세요.
+[리뷰 양식] 마크다운 형식. `# 최종 리뷰`, `## 연구 배경 및 목적`, `## 주요 연구 방법 및 결과`, `## 학술적 가치 및 결론` 형식을 갖추세요.
 """
     try:
-        # SDK에서는 contents에 텍스트를 직접 포함
         response = c.models.generate_content(
-            model=MODELS[current_model_idx], 
-            contents=[instruction, text]
+            model=MODELS[current_model_idx],
+            contents=[instruction, combined_text]
         )
-        return response.text if response.text else "요약 실패"
+        return response.text if response.text else "최종 리듀스 실패"
     except Exception as e:
-        msg = str(e).lower()
-        if "429" in msg or "quota" in msg:
-            return "RPD_EXCEEDED" if "day" in msg else "QUOTA_EXCEEDED"
-        return f"ERROR: {str(e)}"
+        return f"Error in Reduce phase: {str(e)}"
 
 def parse_response(text: str):
-    # 0. <thought> 블록 제거
     text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    
     json_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
     if json_match:
         try:
             info = json.loads(json_match.group(1))
             summary = text.replace(json_match.group(0), "").strip()
-            # 요약 양식 강제 추출
-            summary_match = re.search(r'(#\s*요약.*)', summary, re.DOTALL | re.IGNORECASE)
-            if summary_match:
-                summary = summary_match.group(1)
             return info, summary
         except: pass
     return None, text
@@ -116,9 +141,7 @@ def process_summaries():
     summary_output_dir = "output/summaries"
     processed_dir = os.path.join(paper_dir, "processed")
     
-    # 여기서 키 체크 유도
     get_client()
-    
     history = load_history()
     os.makedirs(summary_output_dir, exist_ok=True)
     os.makedirs(processed_dir, exist_ok=True)
@@ -130,51 +153,49 @@ def process_summaries():
         file_hash = calculate_file_hash(file_path)
 
         if file_hash in history:
-            print(f"\n⚠️ 중복 내용 감지: {filename}")
-            target_name = history[file_hash]
-            shutil.move(file_path, os.path.join(processed_dir, target_name))
-            continue
+            entry = history[file_hash]
+            if isinstance(entry, dict) and entry.get("filename"):
+                target_name = entry.get("filename")
+                print(f"\n⚠️ 이미 요약 완료된 내용 감지: {filename}")
+                shutil.move(file_path, os.path.join(processed_dir, target_name))
+                continue
 
-        print(f"\n🚀 분석 시작 (SDK + 전체 텍스트): {filename}")
+        print(f"\n🚀 선택적 맵핑(Selective Mapping) 분석 시작 (Gemma 4): {filename}")
         
         try:
-            # pymupdf4llm으로 교체
             full_text = pymupdf4llm.to_markdown(file_path)
-            cleaned_text = clean_paper_text(full_text)
-        except Exception as e: 
-            print(f"❌ 추출 오류: {e}")
-            continue
-
-        success = False
-        for _ in range(3):
-            raw = summarize_and_rename_info(cleaned_text)
-            if raw == "RPD_EXCEEDED":
-                if switch_model(): 
-                    print(f"🔄 모델 전환: {MODELS[current_model_idx]}")
-                    continue
-                else: 
-                    print("❌ 모든 모델 일일 한도 초과")
-                    return
-            if raw == "QUOTA_EXCEEDED":
-                print("⏳ 분당 한도 초과, 30초 대기...")
-                time.sleep(30); continue
             
-            info, summary = parse_response(raw)
+            # 1. Selective Split & Filter
+            section_groups = split_and_filter_sections(full_text)
+            print(f"  └ 📄 섹션 필터링 및 그룹화 완료 ({len(section_groups)}개 그룹)")
+            
+            # 2. Map Phase (고정 2회 호출 예상)
+            mapped_summaries = []
+            for group_name, content_list in section_groups.items():
+                if not content_list: continue
+                print(f"    - [{group_name}] 그룹 분석 중...")
+                summary_part = summarize_group(group_name, content_list)
+                mapped_summaries.append(summary_part)
+                time.sleep(5)
+            
+            # 3. Reduce Phase
+            print("  └ 🔄 최종 통합 리뷰 생성 중...")
+            final_raw = reduce_final_review(mapped_summaries)
+            
+            info, final_summary = parse_response(final_raw)
             if info:
                 year = str(info.get('year', '0000')).strip()
                 author = str(info.get('author', 'Unknown')).strip()
                 keywords = str(info.get('keywords', 'Paper')).strip()
                 
-                # 파일명 안전하게 처리
-                new_base = f"[{year}]_[{author}]_[{keywords}]"
-                new_base = re.sub(r'[\\/*?:"<>|]', "", new_base).replace(" ", "_")
+                new_base = f"{year}_{author}_{keywords}"
+                new_base = re.sub(r'[\\/*?:"<>|\[\]]', "", new_base).replace(" ", "_")
                 
                 new_pdf_name = f"{new_base}.pdf"
                 new_summary_name = f"{new_base}_summary.md"
                 
-                # UTF-8-SIG로 저장
                 with open(os.path.join(summary_output_dir, new_summary_name), "w", encoding="utf-8-sig") as f:
-                    f.write(summary)
+                    f.write(final_summary)
                 
                 target_path = os.path.join(processed_dir, new_pdf_name)
                 cnt = 1
@@ -184,20 +205,23 @@ def process_summaries():
                 
                 shutil.move(file_path, target_path)
                 final_name = os.path.basename(target_path)
-                print(f"✅ 처리 완료: {final_name}")
+                print(f"✅ 최종 처리 완료: {final_name}")
                 
-                history[file_hash] = final_name
+                history[file_hash] = {
+                    "category": "논문",
+                    "filename": final_name,
+                    "model": "gemma-4-31b-it-selective-mapreduce",
+                    "processed_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
                 save_history(history)
-                success = True; break
-            else: 
-                print("⚠️ 응답 파싱 실패, 재시도 중...")
-                time.sleep(5)
+            else:
+                print("⚠️ 최종 리듀스 응답 파싱 실패")
 
-        if success: 
-            # RPM 15 제한 (약 4초 이상 대기 필요, 안전하게 10초)
-            time.sleep(10)
-        else: 
-            print(f"❌ 최종 실패: {filename}")
+        except Exception as e:
+            print(f"❌ 분석 중 오류: {e}")
+            continue
+
+        time.sleep(5)
 
 if __name__ == "__main__":
     process_summaries()

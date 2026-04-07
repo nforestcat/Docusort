@@ -92,11 +92,32 @@ def ensure_api_key():
         print("❌ API 키가 입력되지 않았습니다. 프로그램을 종료합니다.")
         os._exit(1)
 
+import json
+
+HISTORY_FILE = "output/processed_history.json"
+
+def load_history():
+    """기존 처리 이력을 로드합니다."""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            # 윈도우 호환성을 위해 utf-8-sig 사용
+            with open(HISTORY_FILE, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        except: return {}
+    return {}
+
+def save_history(history):
+    """새로운 처리 이력을 저장합니다."""
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+    with open(HISTORY_FILE, "w", encoding="utf-8-sig") as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+
 def log_message(message: str, level: str = "INFO"):
     """작업 수행 내역을 automation.log 파일에 기록합니다."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}] [{level}] {message}\n"
-    with open("automation.log", "a", encoding="utf-8") as f:
+    # 윈도우 환경에서의 한글 깨짐 방지를 위해 utf-8-sig 사용
+    with open("automation.log", "a", encoding="utf-8-sig") as f:
         f.write(log_entry)
 
 def extract_text_from_pdf(pdf_path: str) -> str:

@@ -3,8 +3,10 @@ from tkinter import messagebox, scrolledtext
 import threading
 import os
 import subprocess
+import time
 from src.classifier import process_all_documents
 from src.summarizer import process_summaries
+from src.utils import log_message
 
 class DocuSortGUI:
     def __init__(self, root):
@@ -51,6 +53,11 @@ class DocuSortGUI:
     def log(self, message):
         self.log_area.insert(tk.END, message + "\n")
         self.log_area.see(tk.END)
+        # 콘솔 로그 및 파일 로그와도 연동
+        if "❌" in message or "ERROR" in message:
+            log_message(message.strip(), "ERROR")
+        else:
+            log_message(message.strip())
 
     def open_folder(self, path):
         if not os.path.exists(path):
@@ -64,15 +71,16 @@ class DocuSortGUI:
     def run_process(self):
         self.log("🚀 전체 프로세스를 시작합니다 (분류 -> 요약)...")
         try:
-            # 분류 단계
+            # 1. 문서 분류 단계
             self.log("[1단계: 문서 분류 및 전처리]")
             process_all_documents()
             
-            # 요약 단계
+            # 2. 논문 요약 단계
             self.log("\n[2단계: 논문 요약 및 이름 변경]")
             process_summaries()
             
             self.log("\n✅ 모든 작업이 완료되었습니다!")
+            self.log("결과물 확인: output/summaries/ 및 output/classified/논문/processed/")
             messagebox.showinfo("완료", "모든 문서의 분류 및 요약이 완료되었습니다.")
         except Exception as e:
             self.log(f"❌ 오류 발생: {str(e)}")
@@ -104,9 +112,11 @@ class DocuSortGUI:
                 self.gui.log(f"\n🔔 새 파일 감지! 자동 프로세스를 시작합니다...")
                 time.sleep(3) # 파일 쓰기 완료 대기
                 try:
+                    self.gui.log("[1단계: 문서 분류 및 전처리]")
                     process_all_documents()
+                    self.gui.log("[2단계: 논문 요약 및 이름 변경]")
                     process_summaries()
-                    self.gui.log("✅ 자동 프로세스 완료. 대기 중...")
+                    self.gui.log("✅ 자동 프로세스 완료. 결과물을 확인하세요.")
                 except Exception as e:
                     self.gui.log(f"❌ 자동 처리 중 오류: {e}")
                 finally:

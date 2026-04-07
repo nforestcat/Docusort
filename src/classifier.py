@@ -6,11 +6,12 @@ import sys
 import pymupdf4llm
 from google import genai
 from dotenv import load_dotenv
-from src.utils import log_message, extract_zip_files, ensure_api_key
+from src.utils import log_message, extract_zip_files, ensure_api_key, calculate_file_hash, load_history, save_history
 
-# 전역 클라이언트 변수 (지연 초기화)
+# 사용할 모델 리스트 (gemma_version 브랜치: Gemma 4 전담)
+MODELS = ['gemma-4-31b-it']
+current_model_idx = 0
 client = None
-MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 
 def get_client():
     """API 키를 확인하고 클라이언트를 반환합니다."""
@@ -20,9 +21,17 @@ def get_client():
         client = genai.Client(api_key=api_key)
     return client
 
+def switch_model():
+    """한도 초과 시 다음 모델로 전환합니다."""
+    global current_model_idx, client
+    if current_model_idx < len(MODELS) - 1:
+        current_model_idx += 1
+        client = None # 클라이언트 재설정 유도
+        return True
+    return False
+
 def classify_document(text: str) -> str:
-    """텍스트 내용을 분석하여 카테고리를 반환합니다.
-    문서의 앞부분(7000자)과 뒷부분(3000자)을 조합하여 분석의 정확도를 높입니다."""
+    """텍스트 내용을 분석하여 카테고리를 반환합니다."""
     c = get_client()
     
     # 텍스트 샘플링 (앞부분 7000자 + 뒷부분 3000자)
@@ -33,10 +42,9 @@ def classify_document(text: str) -> str:
     
     [분류 가이드라인]
     1. 논문: 초록(Abstract), 서론(Introduction), 저자 소속(Affiliation), 참고문헌(References) 섹션 중 2개 이상의 특징이 명확한 경우. 
-       - 예: 학술지 게재용 포맷, DOI 포함, 학술적 연구 결과 보고 등.
-    2. 기술: 제품 매뉴얼, 사양서, 기술 백서(Whitepaper), API 가이드, 코드 설명서 등 구체적인 기술 정보 전달이 주된 목적인 경우.
-    3. 금융: 경제 리포트, 재무제표, 증권 분석, 은행/보험 안내서 등 금융 데이터나 경제 용어가 주된 경우.
-    4. 일반: 그 외의 서신, 뉴스 기사, 공지사항, 홍보물 등 일상적이거나 다른 범주에 속하지 않는 경우.
+    2. 기술: 제품 매뉴얼, 사양서, 기술 백서(Whitepaper), API 가이드 등 기술 정보 전달이 주된 목적인 경우.
+    3. 금융: 경제 리포트, 재무제표, 증권 분석 등 금융 데이터나 경제 용어가 주된 경우.
+    4. 일반: 그 외의 홍보물, 서신, 뉴스 기사 등 일상적이거나 다른 범주에 속하지 않는 경우.
 
     *주의: 기술적 내용이 포함된 학술 논문은 반드시 '논문'으로 분류하세요.*
     
@@ -49,17 +57,15 @@ def classify_document(text: str) -> str:
     
     try:
         response = c.models.generate_content(
-            model=MODEL_NAME,
+            model=MODELS[current_model_idx],
             contents=instruction
         )
         response_text = response.text.strip()
         
-        # RESULT: [카테고리] 형식에서 추출 시도
         match = re.search(r'RESULT:\s*\[?(논문|기술|금융|일반)\]?', response_text)
         if match:
             return match.group(1)
         
-        # 형식이 틀린 경우 텍스트에서 카테고리 포함 여부 확인
         valid_categories = ["논문", "기술", "금융", "일반"]
         for valid in valid_categories:
             if valid in response_text:
@@ -67,6 +73,11 @@ def classify_document(text: str) -> str:
         return "일반"
             
     except Exception as e:
+        msg = str(e).lower()
+        if ("429" in msg or "quota" in msg) and switch_model():
+            log_message(f"한도 초과로 모델 전환: {MODELS[current_model_idx]}")
+            return classify_document(text) # 전환된 모델로 재시도
+        
         log_message(f"Gemini 분류 중 오류 발생: {str(e)}", "ERROR")
         return "일반"
 
@@ -81,7 +92,6 @@ def handle_pre_processing(input_dir: str):
         for zip_name in zip_files:
             zip_path = os.path.join(input_dir, zip_name)
             if extract_zip_files(zip_path, input_dir):
-                # 압축 해제 성공 시 processed_zips 폴더로 이동
                 shutil.move(zip_path, os.path.join(processed_zips_dir, zip_name))
         print("✅ 압축 해제 완료.")
 
@@ -90,12 +100,11 @@ def process_all_documents():
     input_dir = "input"
     output_base_dir = "output/classified"
     
-    # 여기서 클라이언트 초기화 유도 (키 체크 포함)
-    get_client()
-
+    # 이력 로드
+    history = load_history()
+    
     if not os.path.exists(input_dir):
         os.makedirs(input_dir, exist_ok=True)
-        log_message("input 폴더 생성됨.")
 
     # 1. 압축 파일 전처리
     handle_pre_processing(input_dir)
@@ -109,10 +118,29 @@ def process_all_documents():
 
     for filename in files:
         file_path = os.path.join(input_dir, filename)
+        file_hash = calculate_file_hash(file_path)
+
+        # 중복 체크
+        if file_hash in history:
+            entry = history[file_hash]
+            # 구버전 이력(문자열만 있는 경우) 대응
+            if isinstance(entry, str):
+                category = "논문" if "논문" in entry or "_" in entry else "일반"
+            else:
+                category = entry.get("category", "일반")
+            
+            print(f"\n⚠️ 중복 내용 감지: {filename} (이미 {category}로 분류됨)")
+            target_dir = os.path.join(output_base_dir, category)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            # 논문인 경우 이미 이름이 바뀌었을 수 있으므로 이력의 파일명 활용 고려
+            # 여기서는 단순히 해당 카테고리 폴더로 이동만 처리 (요약기에서 최종 정리)
+            shutil.move(file_path, os.path.join(target_dir, filename))
+            continue
+
         print(f"\n🚀 문서 분석 중: {filename}...")
         
         try:
-            # pymupdf4llm을 사용하여 마크다운 텍스트 추출
             text = pymupdf4llm.to_markdown(file_path)
         except Exception as e:
             log_message(f"텍스트 추출 실패: {filename} ({str(e)})", "ERROR")
@@ -120,6 +148,10 @@ def process_all_documents():
 
         category = classify_document(text)
         log_message(f"파일 분류 완료: {filename} -> {category}")
+
+        # 이력에 임시 기록 (요약 단계에서 최종 파일명으로 업데이트됨)
+        history[file_hash] = {"category": category, "original_filename": filename}
+        save_history(history)
 
         target_dir = os.path.join(output_base_dir, category)
         os.makedirs(target_dir, exist_ok=True)
