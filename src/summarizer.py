@@ -17,37 +17,42 @@ MODEL_NAME = "gemma-4-31b-it"
 
 
 def extract_key_sections(pdf_path: str) -> str:
-    """논문에서 불필요한 섹션을 제거하고 핵심만 병합합니다. (Final Tail-cut Optimization)"""
+    """논문에서 불필요한 섹션을 제거하고 핵심만 병합합니다. (Bulletproof Tail-cut)"""
     try:
         md_text = pymupdf4llm.to_markdown(pdf_path)
         
-        # 1. 후반부 일괄 절삭 (꼬리 자르기 전략)
+        # 1. 후반부 일괄 절삭 (가장 확실한 키워드 검색 방식)
         # 요약에 불필요한 정보가 시작되는 지점들의 키워드 리스트
-        tail_keywords = [
-            r'\n#+\s*References', r'\n#+\s*BIBLIOGRAPHY', r'\n#+\s*참고문헌',
-            r'\n#+\s*Acknowledgments', r'\n#+\s*Acknowledgement',
-            r'\n#+\s*Abbreviations', r'\n#+\s*Notes', r'\n#+\s*Declaration of Competing Interest',
-            r'\n#+\s*Supporting Information', r'\n#+\s*Appendices', r'\n#+\s*Appendix',
-            r'\n#+\s*Author Information', r'\n#+\s*Conflict of Interest', r'\n#+\s*Data Availability',
-            r'\n#+\s*Literature Cited', r'\n#+\s*NOTES AND REFERENCES'
+        target_words = [
+            'references', 'bibliography', '참고문헌',
+            'acknowledgments', 'acknowledgement',
+            'abbreviations', 'notes', 'declaration of',
+            'supporting information', 'associated content', 'appendices', 'appendix',
+            'author information', 'conflict of interest', 'data availability',
+            'literature cited', 'graphic abstract'
         ]
         
         earliest_index = len(md_text)
         
-        # 블랙리스트 키워드 중 가장 먼저 등장하는 위치 찾기
-        for kw_pattern in tail_keywords:
-            match = re.search(kw_pattern, md_text, flags=re.IGNORECASE)
+        # 각 키워드에 대해 텍스트 전체에서 위치를 찾음
+        for word in target_words:
+            # ## ■ [NOTES], ## **REFERENCES** 등을 모두 잡기 위해 중간에 어떤 문자든 허용
+            # 단어 사이의 공백이나 기호도 유연하게 대응 (예: associated content -> associated.*content)
+            word_pattern = word.replace(' ', r'.*')
+            pattern = rf'\n#+.*{word_pattern}'
+            match = re.search(pattern, md_text, flags=re.IGNORECASE)
+            
             if match:
                 if match.start() < earliest_index:
                     earliest_index = match.start()
         
-        # 레퍼런스 번호 리스트 감지 (예: [1] 또는 (1) 등)
-        ref_list_pattern = re.search(r'\n\s*(\[\d+\]|\(\d+\)|\d+\.)\s+[A-Z]', md_text)
-        if ref_list_pattern and ref_list_pattern.start() > len(md_text) * 0.2:
+        # 만약 헤더로 잡히지 않았더라도, 줄 시작 부분에 [1] 등이 나오면 레퍼런스로 간주
+        ref_list_pattern = re.search(r'\n\s*[-\s]*(\[\d+\]|\(\d+\)|\d+\.)\s+[A-Z]', md_text)
+        if ref_list_pattern and ref_list_pattern.start() > len(md_text) * 0.3:
             if ref_list_pattern.start() < earliest_index:
                 earliest_index = ref_list_pattern.start()
         
-        # 발견된 가장 빠른 위치에서 텍스트를 통째로 두 동강 내고 앞부분만 취함!
+        # 최종 절삭
         if earliest_index < len(md_text):
             md_text = md_text[:earliest_index]
 
@@ -69,11 +74,8 @@ def extract_key_sections(pdf_path: str) -> str:
         
         md_text = "".join(cleaned_sections)
 
-        # 3. 최종 안전 샘플링 (토큰 한도 및 AI 집중도 유지) 상향 조정 (30,000자)
-        if len(md_text) > 30000:
-            key_content = md_text[:20000] + "\n\n... [중략: 핵심 결과 및 논의 보존] ...\n\n" + md_text[-10000:]
-        else:
-            key_content = md_text
+        # 3. 최종 안전 샘플링 제거 (사용자 요청: 텍스트 전체 전달)
+        key_content = md_text
 
         return key_content
     except Exception as e:
@@ -81,18 +83,21 @@ def extract_key_sections(pdf_path: str) -> str:
         return ""
 
 def summarize_paper_optimized(client, filename, key_content):
-    """단일 프롬프트로 서지 정보 추출과 요약을 동시에 수행합니다."""
+    """단일 프롬프트로 서지 정보 추출과 요약을 동시에 수행합니다. (프롬프트 기반 사고 모드)"""
     
-    prompt = f"""당신은 전문 학술 분석가입니다. 제공된 논문 내용을 바탕으로 다음 두 가지 작업을 수행하세요.
+    # 프롬프트에 사고(Thinking) 프로세스 유도 로직 추가
+    prompt = f"""당신은 세계 최고의 학술 분석가입니다. 제공된 논문의 방대한 내용을 분석하기 전, 먼저 깊게 생각(Thinking)하고 그 과정을 정리한 뒤 최종 답변을 내놓으세요.
 
-1. **서지 정보 추출**: 파일명 생성을 위해 [발행 연도, 제1저자 성, 핵심 키워드 1개]를 추출하세요.
-2. **논문 요약**: 한국어로 핵심 내용을 요약하세요. (# 요약, ## 핵심 내용, ## 결론 형식 준수)
+[작업 지시]
+1. **내부 사고 과정**: 논문의 핵심 기여도, 실험 설계의 타당성, 결과의 유의성을 단계별로 추론하세요.
+2. **서지 정보 추출**: 파일명 생성을 위해 [발행 연도, 제1저자 성, 핵심 키워드 1개]를 추출하세요.
+3. **논문 요약**: 한국어로 핵심 내용을 요약하세요. (# 요약, ## 핵심 내용, ## 결론 형식 준수)
 
 --- 논문 내용 ({filename}) ---
 {key_content}
 --- 내용 끝 ---
 
-**응답 형식**: 반드시 아래의 JSON 구조로만 응답하세요.
+**응답 형식**: 반드시 아래의 JSON 구조로만 응답하세요. 사고 과정은 JSON 외부나 특정 필드에 포함하지 말고, 모델의 내부 추론으로만 활용하거나 필요한 경우 요약 내용에 녹여내세요.
 {{
   "metadata": {{
     "year": "YYYY",
@@ -104,6 +109,7 @@ def summarize_paper_optimized(client, filename, key_content):
 """
 
     try:
+        # 안정적인 기본 설정으로 호출하되, 프롬프트 지시어로 사고 유도
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt
@@ -125,6 +131,7 @@ def sanitize_filename(name):
 
 def process_summaries():
     """논문으로 분류된 파일들을 최적화된 방식으로 요약하고 이름을 변경합니다."""
+    # 가장 안정적인 기본 설정으로 복구
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     history = load_history()
     
@@ -146,6 +153,11 @@ def process_summaries():
 
     for filename in files:
         file_path = os.path.join(source_dir, filename)
+        
+        # 파일이 실제로 존재하는지 한 번 더 확인 (이동 중 에러 방지)
+        if not os.path.exists(file_path):
+            continue
+            
         file_hash = calculate_file_hash(file_path)
 
         if file_hash in history and history[file_hash].get("summarized"):
