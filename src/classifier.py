@@ -77,14 +77,20 @@ def process_all_documents():
     client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
     history = load_history()
     
-    # 1. 처리할 파일 목록 확보 (이미 처리된 해시는 스킵)
+    # 1. 처리할 파일 목록 확보 (이미 처리된 해시는 삭제 및 스킵)
     files_to_process = []
     for filename in os.listdir(INPUT_DIR):
         if filename.lower().endswith(".pdf"):
             file_path = os.path.join(INPUT_DIR, filename)
             file_hash = calculate_file_hash(file_path)
             
+            # 중복 파일 처리 (이미 히스토리에 있는 경우)
             if file_hash in history and history[file_hash].get("classified"):
+                try:
+                    os.remove(file_path)
+                    log_message(f"🗑️ 중복 파일 감지 및 삭제: {filename} (이미 처리됨)")
+                except Exception as e:
+                    log_message(f"중복 파일 삭제 실패 ({filename}): {e}", "ERROR")
                 continue
                 
             files_to_process.append((filename, file_path, file_hash))
