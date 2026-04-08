@@ -93,6 +93,30 @@ def ensure_api_key():
         os._exit(1)
 
 import json
+import re
+
+def parse_json_response(text: str):
+    """
+    LLM 응답 텍스트에서 JSON 블록을 찾아 파이썬 객체(dict 또는 list)로 변환합니다.
+    마크다운 코드 블록(```json ... ```)이나 일반 텍스트 내의 JSON 구조를 처리합니다.
+    """
+    try:
+        # 1. 마크다운 JSON 블록 찾기 시도
+        json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+        if json_match:
+            json_text = json_match.group(1).strip()
+        else:
+            # 2. 가장 바깥쪽의 { } 또는 [ ] 구조 찾기 시도
+            json_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', text)
+            if json_match:
+                json_text = json_match.group(1).strip()
+            else:
+                json_text = text.strip()
+
+        return json.loads(json_text)
+    except Exception as e:
+        log_message(f"JSON 파싱 실패: {e}\n원본 텍스트 일부: {text[:200]}...", "ERROR")
+        return None
 
 HISTORY_FILE = "output/processed_history.json"
 

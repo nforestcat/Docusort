@@ -135,7 +135,15 @@ class DocuSortGUI:
         self.monitor_btn.config(text="🔍 실시간 감시 시작", bg="#2196F3")
         self.log("🛑 실시간 감시가 중지되었습니다.")
 
+    def on_closing(self):
+        """창을 닫을 때 모든 감시를 중단하고 안전하게 종료합니다."""
+        if self.monitoring:
+            self.stop_monitoring()
+        self.root.destroy()
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = DocuSortGUI(root)
+    # 창 닫기(X 버튼) 이벤트와 핸들러 연결
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
