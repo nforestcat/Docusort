@@ -15,31 +15,59 @@ BATCH_SIZE = 5 # 한 번에 분류할 문서 개수
 MODEL_NAME = "gemma-4-31b-it"
 
 def classify_documents_batch(client, doc_batch):
-    """여러 문서를 한 번에 분류합니다."""
-    # doc_batch: list of (filename, sample_text)
+    """여러 문서를 한 번에 분류합니다. (Gemma 4 System Prompt & ID 매칭 적용)"""
     
-    prompt = "당신은 문서 분류 전문가입니다. 아래 제공된 여러 문서(1번부터 N번까지)의 내용을 분석하여 각각의 카테고리를 판별하세요.\n\n"
-    prompt += "카테고리 후보: [논문, 기술, 금융, 일반]\n"
-    prompt += "응답 형식: 반드시 아래와 같은 JSON 리스트 형식으로만 답변하세요. 다른 설명은 생략하세요.\n"
-    prompt += '[{"filename": "문서1.pdf", "category": "논문"}, {"filename": "문서2.pdf", "category": "기술"}]\n\n'
+    # 1. 시스템 프롬프트: 역할, 규칙, 출력 형식만 엄격하게 지정
+    system_instruction = """당신은 문서 분류 전문가입니다.
+제공된 여러 문서의 내용을 분석하여 각각의 카테고리를 판별하세요.
+카테고리 후보: [논문, 기술, 금융, 일반]
+
+응답 형식: 반드시 아래와 같은 JSON 리스트 형식으로만 답변하세요. 다른 설명은 절대 생략하세요.
+[
+  {"id": 0, "category": "논문"},
+  {"id": 1, "category": "기술"}
+]"""
+
+    # 2. 사용자 프롬프트: 순수한 데이터만 주입 (ID 기반)
+    user_prompt = "아래 제공된 문서들을 분석하고 JSON으로 결과를 반환해 줘.\n\n"
     
     for i, (filename, text) in enumerate(doc_batch):
         # 문서별로 앞 7,000자, 뒤 3,000자 샘플링 (토큰 절약 및 특징 추출)
         sample = text[:7000] + "\n... (중략) ...\n" + text[-3000:] if len(text) > 10000 else text
-        prompt += f"--- [문서 {i+1}: {filename}] ---\n{sample}\n\n"
+        # 파일명 대신 명확한 고유 인덱스(id) 사용
+        user_prompt += f"--- [문서 ID: {i}] ---\n파일이름: {filename}\n{sample}\n\n"
 
     try:
+        # 3. API 호출 (시스템 프롬프트 적용 및 저온도 설정)
+        from google.genai import types
         response = client.models.generate_content(
             model=MODEL_NAME,
-            contents=prompt
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.1
+            )
         )
         
         results = parse_json_response(response.text)
+        
+        # 4. ID를 다시 파일명으로 안전하게 매핑
         if isinstance(results, list):
-            return results
+            mapped_results = []
+            for res in results:
+                doc_id = res.get("id")
+                category = res.get("category")
+                
+                # doc_id가 정상적인 인덱스인지 확인 후 원래 파일명과 결합
+                if isinstance(doc_id, int) and 0 <= doc_id < len(doc_batch):
+                    original_filename = doc_batch[doc_id][0]
+                    mapped_results.append({"filename": original_filename, "category": category})
+            
+            return mapped_results
         else:
             log_message(f"배치 분류 결과가 리스트 형식이 아닙니다: {response.text[:200]}", "ERROR")
             return None
+            
     except Exception as e:
         log_message(f"배치 분류 중 API 오류: {e}", "ERROR")
         return None
