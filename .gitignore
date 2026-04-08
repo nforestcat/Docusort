@@ -7,3 +7,6 @@ output/
 build/
 dist/
 *.spec
+
+# AI debug files
+output/debug_filtered_*.md
