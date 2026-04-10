@@ -98,7 +98,7 @@ import re
 def parse_json_response(text: str):
     """
     LLM 응답 텍스트에서 JSON 블록을 찾아 파이썬 객체로 변환합니다.
-    Invalid \escape 에러 방지를 위한 전처리를 수행합니다.
+    Invalid \\escape 에러 방지를 위한 전처리를 수행합니다.
     """
     try:
         # 1. 마크다운 JSON 블록 찾기 시도
@@ -115,8 +115,8 @@ def parse_json_response(text: str):
 
         # [추가] Invalid \escape 오류 방지를 위한 전처리
         # JSON 표준에서 허용하지 않는 백슬래시(예: \mu, \pm 등)를 \\mu, \\pm으로 치환
-        # 유효한 이스케이프(\", \\, \/, \b, \f, \n, \r, \t, \u)가 아닌 모든 \ 뒤에 \를 하나 더 붙임
-        json_text = re.sub(r'\\(?![\\"/bfnrtu])', r'\\\\', json_text)
+        # 유효한 이스케이프(\", \\, \/, \b, \f, \n, \r, \t, \u)가 아닌 모든 \ 뒤에 \를 하나 더 붙임 (단, 이미 \\인 경우는 제외)
+        json_text = re.sub(r'(?<!\\)\\(?![\\"/bfnrtu])', r'\\\\', json_text)
 
         # strict=False를 사용하여 제어 문자(\n 등)가 섞인 경우에도 최대한 허용
         return json.loads(json_text, strict=False)

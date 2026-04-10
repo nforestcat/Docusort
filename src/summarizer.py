@@ -27,7 +27,7 @@ def extract_key_sections(pdf_path: str) -> str:
             'references', 'bibliography', '참고문헌',
             'acknowledgments', 'acknowledgement',
             'abbreviations', 'notes', 'declaration of',
-            'supporting information', 'associated content', 'appendices', 'appendix',
+            'associated content', 'appendices', 'appendix',
             'author information', 'conflict of interest', 'data availability',
             'literature cited', 'graphic abstract'
         ]
@@ -96,7 +96,7 @@ def summarize_paper_optimized(client, filename, key_content):
      * 실제 이 논문의 저자(Primary Author)는 논문 맨 앞부분에 있습니다. (예: Wei-Liang Chen)
    - **저자 성(author)**: 위 성명에서 **'성(Surname)'**만 따로 분리하세요. (예: Chen)
      * 임의로 이름을 바꾸거나 철자를 수정하지 마세요.
-   - **키워드(keyword)**: 논문의 주제를 관통하는 핵심 영문 키워드 1개.
+   - **키워드(keyword)**: 논문의 주제를 관통하는 핵심 영문 키워드 1~2개. 2개일 경우 반드시 하이픈('-')으로 연결하세요 (예: MachineLearning-Healthcare 또는 Nanoparticle-Coating).
 
 2. **논문 요약**: 한국어로 핵심 내용을 요약하세요. (# 요약, ## 핵심 내용, ## 결론 형식 준수)
 
