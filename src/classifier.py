@@ -28,20 +28,18 @@ def classify_document(text: str) -> str:
     # 텍스트 샘플링 (앞부분 7000자 + 뒷부분 3000자)
     sample_text = text[:7000] + "\n\n...[중략]...\n\n" + text[-3000:] if len(text) > 10000 else text
 
-    instruction = f"""당신은 고도로 정밀한 문서 분류기입니다. 제시된 텍스트(마크다운 형식)를 보고 다음 중 하나로 분류하세요:
-    [기술, 금융, 일반, 논문]
-    
-    [분류 가이드라인]
-    1. 논문: 초록(Abstract), 서론(Introduction), 저자 소속(Affiliation), 참고문헌(References) 섹션 중 2개 이상의 특징이 명확한 경우. 
-       - 예: 학술지 게재용 포맷, DOI 포함, 학술적 연구 결과 보고 등.
-    2. 기술: 제품 매뉴얼, 사양서, 기술 백서(Whitepaper), API 가이드, 코드 설명서 등 구체적인 기술 정보 전달이 주된 목적인 경우.
-    3. 금융: 경제 리포트, 재무제표, 증권 분석, 은행/보험 안내서 등 금융 데이터나 경제 용어가 주된 경우.
-    4. 일반: 그 외의 서신, 뉴스 기사, 공지사항, 홍보물 등 일상적이거나 다른 범주에 속하지 않는 경우.
+    instruction = f"""당신은 대학원 연구실 및 행정 환경의 문서 분류 전문가입니다. 제시된 텍스트(마크다운 형식)를 분석하여 다음 5가지 카테고리 중 가장 적합한 하나를 판별하세요.
 
-    *주의: 기술적 내용이 포함된 학술 논문은 반드시 '논문'으로 분류하세요.*
-    
-    결과는 반드시 다음 형식으로 답변하세요:
-    RESULT: [카테고리]
+    [카테고리 후보 및 판별 기준]
+    1. 논문 (Paper): 학술지 논문, 컨퍼런스 발표 자료, 학위 논문 등 학술적 연구 성과물. 
+       - 특징: 초록(Abstract), 서론(Introduction), 결론, 참고문헌(References) 형식이 뚜렷함.
+    2. 행정서식 (Admin Forms): 각종 신청서, 결과 보고서 양식, 동의서, 서약서 등 행정 처리에 필요한 서식.
+    3. 과제금융 (Grant/Finance): 연구 과제 예산, 연구비 집행 내역서, 견적서, 지출 증빙, 과제 제안서(RFP) 등.
+    4. 기술매뉴얼 (Tech Manual): 실험 장비 매뉴얼, 소프트웨어 사용 가이드, MSDS, 기술 사양서.
+    5. 일반안내 (General Info): 학과 공지사항, 세미나 포스터, 강의 계획서(Syllabus), 학사 일정 등.
+
+    결과는 반드시 다음 형식으로만 답변하세요:
+    RESULT: [카테고리명] (예: RESULT: 논문)
 
     문서 내용:
     {sample_text}
@@ -55,20 +53,20 @@ def classify_document(text: str) -> str:
         response_text = response.text.strip()
         
         # RESULT: [카테고리] 형식에서 추출 시도
-        match = re.search(r'RESULT:\s*\[?(논문|기술|금융|일반)\]?', response_text)
+        match = re.search(r'RESULT:\s*(논문|행정서식|과제금융|기술매뉴얼|일반안내)', response_text)
         if match:
             return match.group(1)
         
         # 형식이 틀린 경우 텍스트에서 카테고리 포함 여부 확인
-        valid_categories = ["논문", "기술", "금융", "일반"]
+        valid_categories = ["논문", "행정서식", "과제금융", "기술매뉴얼", "일반안내"]
         for valid in valid_categories:
             if valid in response_text:
                 return valid
-        return "일반"
+        return "일반안내"
             
     except Exception as e:
         log_message(f"Gemini 분류 중 오류 발생: {str(e)}", "ERROR")
-        return "일반"
+        return "일반안내"
 
 def handle_pre_processing(input_dir: str):
     """압축 파일 등을 미리 처리합니다."""

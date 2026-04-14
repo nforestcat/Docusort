@@ -63,23 +63,31 @@ def clean_paper_text(text: str) -> str:
 def summarize_and_rename_info(text: str):
     """Gemini SDK를 사용하여 요약 및 서지 정보를 추출합니다."""
     c = get_client()
-    instruction = """당신은 전문적인 학술 논문 분석가이자 서지 정보 추출 전문가입니다. 
-제시된 텍스트 전체를 분석하여 서론이나 부연 설명 없이 즉시 아래 JSON 블록으로 시작하세요. 그 뒤에 요약본을 작성하세요.
+    instruction = """당신은 세계 최고의 학술 분석가이자 서지 정보 추출 전문가입니다. 논문을 분석하여 핵심 정보를 JSON으로 추출하고 한국어 요약본을 작성하세요.
 
-[중요 지침]
-- 반드시 표준 한국어(UTF-8)를 사용하여 한글이 깨지지 않도록 작성하세요.
-- JSON 블록 이후에는 마크다운 형식의 한국어 요약을 작성하세요.
+### 정보 추출 (Metadata) 규칙:
+1. 연도 (year): 논문의 공식 발행 연도 4자리 (YYYY).
+2. 저자 (author): 반드시 논문 제목(Title) 바로 아래에 나열된 저자 목록에서 첫 번째 저자의 '성(Surname)'만 추출하세요 (예: Chen). 본문 인용구와 혼동하지 마세요.
+3. 키워드 (keyword): 논문의 주제를 관통하는 핵심 영문 키워드 1~2개. 2개일 경우 하이픈('-')으로 연결하세요 (예: AI-Ethics).
 
-[JSON 형식]
+### 요약본 (Summary) 작성 규칙:
+- 반드시 한국어(전문 용어는 영어 병기 가능)로 작성하세요.
+- 마크다운 형식을 사용하여 아래의 구조를 반드시 지키세요:
+  - # 요약: 전체적인 논문의 목적과 성과를 2~3문장으로 기술.
+  - ## 핵심 내용: 주요 제안 방법, 실험 결과, 데이터 등을 불렛 포인트로 기술.
+  - ## 결론: 논문이 시사하는 바와 최종 결론.
+
+### 출력 형식 규칙:
+- 반드시 아래의 JSON 구조로만 응답을 시작하세요. 부연 설명은 JSON 블록 이후에 작성하세요.
 ```json
 {
-  "year": "출판 연도 (예: 2024)",
-  "author": "대표 저자의 성(Surname) (예: Smith)",
-  "keywords": "핵심 키워드 2-3개를 언더바(_)로 연결 (예: AI_Ethics_Policy)"
+  "metadata": {
+    "year": "YYYY",
+    "author": "Surname",
+    "keyword": "Keyword-Topic"
+  }
 }
 ```
-
-[요약 양식] 한국어(영어 병기) 마크다운. `# 요약`, `## 핵심 내용`, `## 결론` 형식을 반드시 지키세요.
 """
     try:
         # SDK에서는 contents에 텍스트를 직접 포함
@@ -101,13 +109,14 @@ def parse_response(text: str):
     json_match = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
     if json_match:
         try:
-            info = json.loads(json_match.group(1))
+            full_json = json.loads(json_match.group(1))
+            metadata = full_json.get('metadata', {})
             summary = text.replace(json_match.group(0), "").strip()
             # 요약 양식 강제 추출
             summary_match = re.search(r'(#\s*요약.*)', summary, re.DOTALL | re.IGNORECASE)
             if summary_match:
                 summary = summary_match.group(1)
-            return info, summary
+            return metadata, summary
         except: pass
     return None, text
 
@@ -123,6 +132,10 @@ def process_summaries():
     os.makedirs(summary_output_dir, exist_ok=True)
     os.makedirs(processed_dir, exist_ok=True)
     
+    if not os.path.exists(paper_dir):
+        print("요약할 논문이 없습니다. (output/classified/논문 폴더 없음)")
+        return
+
     files = [f for f in os.listdir(paper_dir) if f.lower().endswith('.pdf')]
 
     for filename in files:
@@ -163,10 +176,10 @@ def process_summaries():
             if info:
                 year = str(info.get('year', '0000')).strip()
                 author = str(info.get('author', 'Unknown')).strip()
-                keywords = str(info.get('keywords', 'Paper')).strip()
+                keyword = str(info.get('keyword', 'Paper')).strip()
                 
-                # 파일명 안전하게 처리
-                new_base = f"[{year}]_[{author}]_[{keywords}]"
+                # 파일명 안전하게 처리: 연도_저자_키워드.pdf
+                new_base = f"{year}_{author}_{keyword}"
                 new_base = re.sub(r'[\\/*?:"<>|]', "", new_base).replace(" ", "_")
                 
                 new_pdf_name = f"{new_base}.pdf"
@@ -179,7 +192,7 @@ def process_summaries():
                 target_path = os.path.join(processed_dir, new_pdf_name)
                 cnt = 1
                 while os.path.exists(target_path):
-                    target_path = os.path.join(processed_dir, f"{new_base}_{cnt}.pdf")
+                    target_path = os.path.join(processed_dir, f"{year}_{author}_{keyword}_{cnt}.pdf")
                     cnt += 1
                 
                 shutil.move(file_path, target_path)
