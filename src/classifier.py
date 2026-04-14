@@ -8,7 +8,7 @@ from src.utils import log_message, calculate_file_hash, load_history, save_histo
 # 설정
 INPUT_DIR = "input"
 CLASSIFIED_DIR = "output/classified"
-CATEGORIES = ["논문", "기술", "금융", "일반"]
+CATEGORIES = ["논문", "행정서식", "과제금융", "기술매뉴얼", "일반안내"]
 BATCH_SIZE = 5 # 한 번에 분류할 문서 개수
 
 # AI 모델 설정 (gemma_version 브랜치 전용)
@@ -18,14 +18,20 @@ def classify_documents_batch(client, doc_batch):
     """여러 문서를 한 번에 분류합니다. (Gemma 4 System Prompt & ID 매칭 적용)"""
     
     # 1. 시스템 프롬프트: 역할, 규칙, 출력 형식만 엄격하게 지정
-    system_instruction = """당신은 문서 분류 전문가입니다.
+    system_instruction = """당신은 대학원 연구실 환경의 문서 분류 전문가입니다.
 제공된 여러 문서의 내용을 분석하여 각각의 카테고리를 판별하세요.
-카테고리 후보: [논문, 기술, 금융, 일반]
+
+카테고리 후보 및 판별 기준:
+1. 논문 (Paper): 학술지 논문, 컨퍼런스 발표 자료, 학위 논문 등 학술적 연구 성과물. (분류 후 요약 프로세스로 전달됨)
+2. 행정서식 (Admin Forms): 입학/졸업 관련 신청서, 휴학/복학 신청서, 각종 보고서 양식, 서약서 등 행정 처리에 필요한 빈 서식 또는 작성된 서류.
+3. 과제금융 (Grant/Finance): 연구비 집행 내역서, 견적서, 지출 증빙, 과제 제안서(RFP), 과제 협약서 등 연구 과제 및 예산 관련 문서.
+4. 기술매뉴얼 (Tech Manual): 실험 장비 매뉴얼, 소프트웨어 사용법, MSDS(물질안전보건자료), 기술 사양서 등 도구 사용 및 안전 관련 문서.
+5. 일반안내 (General Info): 학과 공지사항, 세미나 포스터, 강의 계획서(Syllabus), 학사 일정안내 등 일반적인 정보 전달 문서.
 
 응답 형식: 반드시 아래와 같은 JSON 리스트 형식으로만 답변하세요. 다른 설명은 절대 생략하세요.
 [
   {"id": 0, "category": "논문"},
-  {"id": 1, "category": "기술"}
+  {"id": 1, "category": "행정서식"}
 ]"""
 
     # 2. 사용자 프롬프트: 순수한 데이터만 주입 (ID 기반)
@@ -123,8 +129,8 @@ def process_all_documents():
         result_map = {res.get("filename"): res.get("category") for res in batch_results if "filename" in res}
         
         for filename, path, fhash in batch:
-            category = result_map.get(filename, "일반") # 결과 없으면 '일반'
-            if category not in CATEGORIES: category = "일반"
+            category = result_map.get(filename, "일반안내") # 결과 없으면 '일반안내'
+            if category not in CATEGORIES: category = "일반안내"
             
             target_dir = os.path.join(CLASSIFIED_DIR, category)
             os.makedirs(target_dir, exist_ok=True)
