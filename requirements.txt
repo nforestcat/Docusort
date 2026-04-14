@@ -1,6 +1,14 @@
-pymupdf
-pymupdf4llm
-python-dotenv
-google-genai
-watchdog
-pyinstaller
+# PDF 처리 및 마크다운 추출 (LLM 최적화)
+PyMuPDF==1.27.2.2
+pymupdf4llm==1.27.2.2
+tabulate==0.10.0
+
+# AI/LLM SDK
+google-genai==1.70.0
+
+# 환경 설정 및 실시간 감시
+python-dotenv==1.2.2
+watchdog==6.0.0
+
+# 배포 및 빌드 도구
+pyinstaller==6.19.0
