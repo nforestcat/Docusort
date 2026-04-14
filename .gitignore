@@ -14,4 +14,13 @@ output/debug_filtered_*.md
 # Testing & Research files
 check_cutoff*
 compre_full_summaries*
+comparison_result*
+full_comparison_result*
+reset_files*
+summary_compare_*
+summary_full_text*
+temp_text*
+test*
+test_classify*
+
 
