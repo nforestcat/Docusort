@@ -4,6 +4,51 @@ from datetime import datetime
 
 import hashlib
 
+import json
+
+HISTORY_FILE = "history.json"
+
+def load_history():
+    """저장된 처리 이력을 로드합니다."""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        except Exception as e:
+            log_message(f"히스토리 로드 실패: {e}", "ERROR")
+            return {}
+    return {}
+
+def save_history(history):
+    """처리 이력을 파일에 저장합니다."""
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8-sig") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log_message(f"히스토리 저장 실패: {e}", "ERROR")
+
+def parse_json_response(text: str):
+    """AI의 응답에서 JSON 블록을 추출하여 파싱합니다."""
+    try:
+        # 1. 마크다운 코드 블록 제거 시도
+        json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+        if json_match:
+            content = json_match.group(1)
+        else:
+            # 2. 첫 번째 '{'와 마지막 '}' 사이 추출
+            start = text.find('{')
+            end = text.rfind('}')
+            if start != -1 and end != -1:
+                content = text[start : end + 1]
+            else:
+                content = text
+        
+        # 3. JSON 파싱 (제어 문자 등 허용을 위해 strict=False 사용)
+        return json.loads(content, strict=False)
+    except Exception as e:
+        log_message(f"JSON 파싱 실패: {e}", "ERROR")
+        return None
+
 def calculate_file_hash(file_path: str) -> str:
     """파일의 SHA-256 해시 값을 계산하여 고유 지문을 생성합니다."""
     sha256_hash = hashlib.sha256()
