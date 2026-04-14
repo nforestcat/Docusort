@@ -2,15 +2,30 @@ import os
 import shutil
 import time
 import re
-import sys
-import pymupdf4llm
+from datetime import datetime
 from google import genai
-from dotenv import load_dotenv
-from src.utils import log_message, extract_zip_files, ensure_api_key
+from google.genai import types
+from src.utils import (
+    log_message, 
+    calculate_file_hash, 
+    load_history, 
+    save_history, 
+    parse_json_response, 
+    extract_text_from_pdf,
+    ensure_api_key
+)
+
+# 설정
+INPUT_DIR = "input"
+CLASSIFIED_DIR = "output/classified"
+CATEGORIES = ["논문", "행정서식", "과제금융", "기술매뉴얼", "일반안내"]
+BATCH_SIZE = 5 # 한 번에 분류할 문서 개수
+
+# AI 모델 설정 (main 브랜치: Gemini 3.1 Flash Lite 적용)
+MODEL_NAME = "models/gemini-3.1-flash-lite-preview"
 
 # 전역 클라이언트 변수 (지연 초기화)
 client = None
-MODEL_NAME = 'models/gemini-3.1-flash-lite-preview'
 
 def get_client():
     """API 키를 확인하고 클라이언트를 반환합니다."""
@@ -20,112 +35,139 @@ def get_client():
         client = genai.Client(api_key=api_key)
     return client
 
-def classify_document(text: str) -> str:
-    """텍스트 내용을 분석하여 카테고리를 반환합니다.
-    문서의 앞부분(7000자)과 뒷부분(3000자)을 조합하여 분석의 정확도를 높입니다."""
-    c = get_client()
-    
-    # 텍스트 샘플링 (앞부분 7000자 + 뒷부분 3000자)
-    sample_text = text[:7000] + "\n\n...[중략]...\n\n" + text[-3000:] if len(text) > 10000 else text
+def classify_documents_batch(c, doc_batch):
+    """여러 문서를 한 번에 분류합니다. (Batch processing with System Instruction)"""
 
-    instruction = f"""당신은 대학원 연구실 및 행정 환경의 문서 분류 전문가입니다. 제시된 텍스트(마크다운 형식)를 분석하여 다음 5가지 카테고리 중 가장 적합한 하나를 판별하세요.
+    # 1. 시스템 프롬프트: 역할, 규칙, 출력 형식 지정
+    system_instruction = """당신은 대학원 연구실 및 행정 환경의 문서 분류 전문가입니다.
+제공된 여러 문서의 내용을 분석하여 각각의 카테고리를 판별하세요.
 
-    [카테고리 후보 및 판별 기준]
-    1. 논문 (Paper): 학술지 논문, 컨퍼런스 발표 자료, 학위 논문 등 학술적 연구 성과물. 
-       - 특징: 초록(Abstract), 서론(Introduction), 결론, 참고문헌(References) 형식이 뚜렷함.
-    2. 행정서식 (Admin Forms): 각종 신청서, 결과 보고서 양식, 동의서, 서약서 등 행정 처리에 필요한 서식.
-    3. 과제금융 (Grant/Finance): 연구 과제 예산, 연구비 집행 내역서, 견적서, 지출 증빙, 과제 제안서(RFP) 등.
-    4. 기술매뉴얼 (Tech Manual): 실험 장비 매뉴얼, 소프트웨어 사용 가이드, MSDS, 기술 사양서.
-    5. 일반안내 (General Info): 학과 공지사항, 세미나 포스터, 강의 계획서(Syllabus), 학사 일정 등.
+카테고리 후보 및 판별 기준:
+1. 논문 (Paper): 학술지 논문, 컨퍼런스 발표 자료, 학위 논문 등 학술적 연구 성과물. 
+2. 행정서식 (Admin Forms): 각종 신청서, 결과 보고서 양식, 동의서, 서약서 등 행정 처리에 필요한 서식.
+3. 과제금융 (Grant/Finance): 연구 과제 예산, 연구비 집행 내역서, 견적서, 지출 증빙, 과제 제안서(RFP) 등.
+4. 기술매뉴얼 (Tech Manual): 실험 장비 매뉴얼, 소프트웨어 사용 가이드, MSDS, 기술 사양서.
+5. 일반안내 (General Info): 학과 공지사항, 세미나 포스터, 강의 계획서(Syllabus), 학사 일정 등.
 
-    결과는 반드시 다음 형식으로만 답변하세요:
-    RESULT: [카테고리명] (예: RESULT: 논문)
+응답 형식: 반드시 아래와 같은 JSON 리스트 형식으로만 답변하세요. 다른 설명은 절대 생략하세요.
+[
+  {"id": 0, "category": "논문"},
+  {"id": 1, "category": "행정서식"}
+]"""
 
-    문서 내용:
-    {sample_text}
-    """
-    
+    # 2. 사용자 프롬프트: 데이터 주입 (ID 기반)
+    user_prompt = "아래 제공된 문서들을 분석하고 JSON으로 결과를 반환해 줘.\n\n"
+
+    for i, (filename, text) in enumerate(doc_batch):
+        # 문서별 샘플링 (앞 7,000자, 뒤 3,000자)
+        sample = text[:7000] + "\n... (중략) ...\n" + text[-3000:] if len(text) > 10000 else text
+        user_prompt += f"--- [문서 ID: {i}] ---\n파일이름: {filename}\n{sample}\n\n"
+
     try:
+        # 3. API 호출
         response = c.models.generate_content(
             model=MODEL_NAME,
-            contents=instruction
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.1
+            )
         )
-        response_text = response.text.strip()
-        
-        # RESULT: [카테고리] 형식에서 추출 시도
-        match = re.search(r'RESULT:\s*(논문|행정서식|과제금융|기술매뉴얼|일반안내)', response_text)
-        if match:
-            return match.group(1)
-        
-        # 형식이 틀린 경우 텍스트에서 카테고리 포함 여부 확인
-        valid_categories = ["논문", "행정서식", "과제금융", "기술매뉴얼", "일반안내"]
-        for valid in valid_categories:
-            if valid in response_text:
-                return valid
-        return "일반안내"
-            
-    except Exception as e:
-        log_message(f"Gemini 분류 중 오류 발생: {str(e)}", "ERROR")
-        return "일반안내"
 
-def handle_pre_processing(input_dir: str):
-    """압축 파일 등을 미리 처리합니다."""
-    processed_zips_dir = os.path.join(input_dir, "processed_zips")
-    
-    zip_files = [f for f in os.listdir(input_dir) if f.lower().endswith('.zip')]
-    if zip_files:
-        os.makedirs(processed_zips_dir, exist_ok=True)
-        print(f"📦 {len(zip_files)}개의 압축 파일 발견. 압축 해제 중...")
-        for zip_name in zip_files:
-            zip_path = os.path.join(input_dir, zip_name)
-            if extract_zip_files(zip_path, input_dir):
-                # 압축 해제 성공 시 processed_zips 폴더로 이동
-                shutil.move(zip_path, os.path.join(processed_zips_dir, zip_name))
-        print("✅ 압축 해제 완료.")
+        results = parse_json_response(response.text)
+
+        # 4. ID를 다시 파일명으로 매핑
+        if isinstance(results, list):
+            mapped_results = []
+            for res in results:
+                doc_id = res.get("id")
+                category = res.get("category")
+
+                if isinstance(doc_id, int) and 0 <= doc_id < len(doc_batch):
+                    original_filename = doc_batch[doc_id][0]
+                    mapped_results.append({"filename": original_filename, "category": category})
+            return mapped_results
+        else:
+            log_message(f"배치 분류 결과가 리스트 형식이 아닙니다: {response.text[:200]}", "ERROR")
+            return None
+
+    except Exception as e:
+        log_message(f"배치 분류 중 API 오류: {e}", "ERROR")
+        return None
 
 def process_all_documents():
-    """input 폴더의 모든 파일을 처리합니다."""
-    input_dir = "input"
-    output_base_dir = "output/classified"
-    
-    # 여기서 클라이언트 초기화 유도 (키 체크 포함)
-    get_client()
+    """Input 폴더의 모든 새로운 문서를 배치 단위로 분류합니다."""
+    c = get_client()
+    history = load_history()
 
-    if not os.path.exists(input_dir):
-        os.makedirs(input_dir, exist_ok=True)
-        log_message("input 폴더 생성됨.")
-
-    # 1. 압축 파일 전처리
-    handle_pre_processing(input_dir)
-
-    # 2. PDF 파일 리스트 확보
-    files = [f for f in os.listdir(input_dir) if f.lower().endswith('.pdf')]
-    
-    if not files:
-        print("분류할 PDF 파일이 input/ 폴더에 없습니다.")
+    # 1. 처리할 파일 목록 확보
+    files_to_process = []
+    if not os.path.exists(INPUT_DIR):
+        os.makedirs(INPUT_DIR, exist_ok=True)
         return
 
-    for filename in files:
-        file_path = os.path.join(input_dir, filename)
-        print(f"\n🚀 문서 분석 중: {filename}...")
-        
-        try:
-            # pymupdf4llm을 사용하여 마크다운 텍스트 추출
-            text = pymupdf4llm.to_markdown(file_path)
-        except Exception as e:
-            log_message(f"텍스트 추출 실패: {filename} ({str(e)})", "ERROR")
+    for filename in os.listdir(INPUT_DIR):
+        if filename.lower().endswith(".pdf"):
+            file_path = os.path.join(INPUT_DIR, filename)
+            file_hash = calculate_file_hash(file_path)
+
+            # 중복 체크 (히스토리 참조)
+            if file_hash in history and history[file_hash].get("classified"):
+                # 이미 분류된 경우 원본 폴더에서 삭제하거나 건너뜀 (여기서는 안전하게 건너뛰기만 할 수도 있음)
+                # shutil.move로 이미 이동되었어야 함.
+                continue
+
+            files_to_process.append((filename, file_path, file_hash))
+
+    if not files_to_process:
+        print("새로 분류할 문서가 없습니다.")
+        return
+
+    log_message(f"총 {len(files_to_process)}개의 문서를 배치 분류합니다. (배치 크기: {BATCH_SIZE})")
+
+    # 2. 배치 단위 실행
+    for i in range(0, len(files_to_process), BATCH_SIZE):
+        batch = files_to_process[i : i + BATCH_SIZE]
+        doc_data_batch = []
+
+        # 텍스트 추출
+        for filename, path, fhash in batch:
+            text = extract_text_from_pdf(path)
+            doc_data_batch.append((filename, text))
+
+        print(f"📦 배치 처리 중 ({(i//BATCH_SIZE)+1}/{(len(files_to_process)-1)//BATCH_SIZE+1})...")
+        batch_results = classify_documents_batch(c, doc_data_batch)
+
+        if not batch_results:
+            print("❌ 배치 처리에 실패했습니다. 다음으로 넘어갑니다.")
             continue
 
-        category = classify_document(text)
-        log_message(f"파일 분류 완료: {filename} -> {category}")
+        # 3. 결과 적용
+        result_map = {res.get("filename"): res.get("category") for res in batch_results if "filename" in res}
 
-        target_dir = os.path.join(output_base_dir, category)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        shutil.move(file_path, os.path.join(target_dir, filename))
-        print(f"  └ ✅ {category} 폴더로 이동 완료.")
+        for filename, path, fhash in batch:
+            category = result_map.get(filename, "일반안내")
+            if category not in CATEGORIES: category = "일반안내"
 
-        # RPM 15 제한 준수 (최소 4초 대기 필요, 안전하게 5초 설정)
+            target_dir = os.path.join(CLASSIFIED_DIR, category)
+            os.makedirs(target_dir, exist_ok=True)
+
+            try:
+                shutil.move(path, os.path.join(target_dir, filename))
+                
+                # 히스토리 업데이트
+                history[fhash] = {
+                    "filename": filename,
+                    "category": category,
+                    "classified": True,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                print(f"  └ ✅ {filename} -> {category}")
+            except Exception as e:
+                log_message(f"파일 이동 실패 ({filename}): {e}", "ERROR")
+
+        save_history(history)
+        # RPM 제한 준수
         time.sleep(5)
 
 if __name__ == "__main__":

@@ -99,6 +99,47 @@ def log_message(message: str, level: str = "INFO"):
     with open("automation.log", "a", encoding="utf-8") as f:
         f.write(log_entry)
 
+import json
+
+def load_history(history_file: str = "output/processed_history.json") -> dict:
+    """기존 처리 이력을 로드합니다."""
+    if os.path.exists(history_file):
+        try:
+            with open(history_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            log_message(f"히스토리 로드 실패: {e}", "ERROR")
+            return {}
+    return {}
+
+def save_history(history: dict, history_file: str = "output/processed_history.json"):
+    """새로운 처리 이력을 저장합니다."""
+    os.makedirs(os.path.dirname(history_file), exist_ok=True)
+    try:
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log_message(f"히스토리 저장 실패: {e}", "ERROR")
+
+def parse_json_response(text: str):
+    """LLM의 응답에서 JSON 블록을 추출하여 파싱합니다."""
+    # <thought> 태그 제거 (있는 경우)
+    text = re.sub(r'<thought>.*?</thought>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # ```json ... ``` 블록 찾기
+    json_match = re.search(r'```json\s*(\[.*?\]|\{.*? text: str\})\s*```', text, re.DOTALL)
+    if not json_match:
+        # 블록 없이 생으로 JSON만 온 경우 시도
+        json_match = re.search(r'(\[.*?\]|\{.*?\})', text, re.DOTALL)
+        
+    if json_match:
+        try:
+            return json.loads(json_match.group(1))
+        except Exception as e:
+            log_message(f"JSON 파싱 실패: {e}", "ERROR")
+            return None
+    return None
+
 def extract_text_from_pdf(pdf_path: str) -> str:
     """PDF 파일에서 텍스트를 추출합니다."""
     text = ""
