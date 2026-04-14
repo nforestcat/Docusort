@@ -10,3 +10,8 @@ dist/
 
 # AI debug files
 output/debug_filtered_*.md
+
+# Testing & Research files
+check_cutoff*
+compre_full_summaries*
+
