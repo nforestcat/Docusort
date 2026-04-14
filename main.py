@@ -15,11 +15,11 @@ def main():
         # 1. 문서 분류 단계 (ZIP 해제 포함)
         print("\n[1단계: 문서 분류 및 전처리]")
         process_all_documents()
-        
+
         # 2. 논문 요약 단계 (이름 변경 및 정리 포함)
         print("\n[2단계: 논문 요약 및 이름 변경]")
         process_summaries()
-        
+
         print("\n" + "="*50)
         print("✅ 모든 작업이 완료되었습니다!")
         print("결과물 확인: output/summaries/ 및 output/classified/논문/processed/")
