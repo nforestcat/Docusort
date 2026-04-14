@@ -17,7 +17,7 @@
 ## 3. 기술 스택 (Tech Stack)
 - **Language:** Python 3.10+
 - **PDF 처리:** `pymupdf4llm` (구조화된 마크다운 추출용)
-- **AI/LLM:** `google-genai` SDK (`gemini-2.0-flash-lite-preview-02-05` 모델 사용)
+- **AI/LLM:** `google-genai` SDK (`gemini-3.1-flash-lite-preview` 모델 사용)
 - **API 제한 관리:**
   - **RPM 15, TPM 250k, RPD 250** 제한을 준수합니다.
   - 안정성을 위해 작업 간 최소 **5~10초의 대기 시간(time.sleep)**을 유지합니다.
